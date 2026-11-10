@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>interact test</title>
+  <link rel="stylesheet" href="../css/style.css">
+  <style>#result { position: fixed; right: 8px; top: 8px; margin: 0; padding: 6px 10px; background: rgba(0,0,0,.8); color: #9f9; font: 12px monospace; white-space: pre; z-index: 50; }</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud"><span class="hud-title">test</span><span id="hud-status">로딩 중...</span></div>
+  <div id="prompt" hidden></div>
+  <section id="panel" hidden role="dialog" aria-modal="true" aria-labelledby="panel-title">
+    <img id="panel-image" alt="" hidden>
+    <h2 id="panel-title"></h2>
+    <p id="panel-author"></p>
+    <p id="panel-desc"></p>
+    <p class="panel-close">E / Space / Esc 로 닫기</p>
+  </section>
+  <pre id="result">running...</pre>
+  <script type="module">
+    import { CONFIG } from '../js/config.js';
+    CONFIG.museumId = ''; // 이 테스트는 데모 작품을 쓴다(사이트 설정의 공유 미술관과 무관하게)
+    await import('../js/main.js');
+    import { SLOTS } from '../js/game/layout.js';
+    const { player, update, render, artworks } = window.__pm;
+    const out = [];
+    const log = (name, ok, d = '') => out.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${d}`);
+    const key = (type, code) => window.dispatchEvent(new KeyboardEvent(type, { code, bubbles: true, cancelable: true }));
+    const tap = (code) => { key('keydown', code); update(1 / 60); key('keyup', code); update(1 / 60); };
+    const run = (seconds) => { for (let i = 0; i < Math.round(seconds * 60); i++) update(1 / 60); };
+    const place = (p) => { player.pos = { x: p.x, z: p.z }; run(0.1); };
+    const $ = (id) => document.getElementById(id);
+    const panelOpen = () => !$('panel').hidden;
+    const promptText = () => ($('prompt').hidden ? null : $('prompt').textContent);
+
+    const params = new URLSearchParams(location.search);
+    const shotSlot = params.get('slot'); // 스크린샷용: slot=<id> 로 해당 슬롯 패널을 연다
+    const art = SLOTS.find((s) => artworks[s.id]);
+    const empty = SLOTS.find((s) => !artworks[s.id] && s.kind === 'frame');
+    const emptyStatue = SLOTS.find((s) => !artworks[s.id] && s.kind === 'statue');
+
+    if (shotSlot !== null) {
+      const s = SLOTS[Number(shotSlot)];
+      place(s.stand);
+      tap('KeyE');
+      run(1.5);
+      render();
+      $('result').textContent = `slot ${s.id} panel=${panelOpen()}`;
+    } else {
+      // 1) 멀리 있으면 안내가 없다
+      place({ x: 0, z: 5.5 });
+      log('스폰 위치에서는 안내가 없다', promptText() === null, String(promptText()));
+      tap('KeyE');
+      log('근처 슬롯이 없으면 E를 눌러도 패널이 열리지 않는다', !panelOpen());
+
+      // 2) 작품이 있는 슬롯
+      place(art.stand);
+      log('작품 슬롯 근처: "작품 보기" 안내', (promptText() || '').includes('작품 보기'), String(promptText()));
+      tap('KeyE');
+      log('E로 패널이 열린다', panelOpen());
+      log('패널에 작품 제목이 표시된다', $('panel-title').textContent === artworks[art.id].title, $('panel-title').textContent);
+      log('패널에 이미지가 표시된다', !$('panel-image').hidden && $('panel-image').getAttribute('src') === artworks[art.id].imageUrl);
+
+      // 3) 패널이 열려 있으면 이동 불가
+      const before = { ...player.pos };
+      key('keydown', 'KeyD'); run(0.5); key('keyup', 'KeyD');
+      log('패널이 열려 있는 동안 이동하지 않는다', Math.abs(player.pos.x - before.x) + Math.abs(player.pos.z - before.z) < 1e-9);
+
+      // 4) 닫기: Esc / E / Space
+      for (const code of ['Escape', 'KeyE', 'Space']) {
+        if (!panelOpen()) tap('KeyE');
+        const wasOpen = panelOpen();
+        tap(code);
+        log(`${code}로 패널이 닫힌다`, wasOpen && !panelOpen());
+      }
+
+      // 5) 닫는 키가 곧바로 다시 여는 일은 없다
+      place(art.stand);
+      tap('KeyE'); tap('KeyE');
+      log('E 한 번에 열리고 다음 E 한 번에 닫힌다(재오픈 없음)', !panelOpen());
+
+      // 6) 닫은 뒤에는 다시 이동한다
+      const b2 = { ...player.pos };
+      key('keydown', 'KeyS'); run(0.3); key('keyup', 'KeyS');
+      log('닫은 뒤 다시 이동한다', Math.abs(player.pos.z - b2.z) > 0.3 || Math.abs(player.pos.x - b2.x) > 0.3, `${b2.z.toFixed(2)} -> ${player.pos.z.toFixed(2)}`);
+
+      // 7) 빈 액자 / 빈 전시대
+      place(empty.stand);
+      log('빈 액자 근처: "빈 자리 보기" 안내', (promptText() || '').includes('빈 자리'), String(promptText()));
+      tap('KeyE');
+      log('빈 액자 패널 제목', panelOpen() && $('panel-title').textContent === '비어 있는 액자', $('panel-title').textContent);
+      log('빈 액자에는 이미지가 없다', $('panel-image').hidden);
+      tap('Escape');
+      if (emptyStatue) {
+        place(emptyStatue.stand);
+        tap('KeyE');
+        log('빈 전시대 패널 제목', panelOpen() && $('panel-title').textContent === '비어 있는 전시대', $('panel-title').textContent);
+        tap('Escape');
+      }
+
+      // 8) 모든 슬롯에서 패널이 열린다
+      let allOpen = true; const bad = [];
+      for (const s of SLOTS) {
+        place(s.stand);
+        const near = promptText();
+        tap('KeyE');
+        const ok = panelOpen() && near !== null;
+        if (!ok) { allOpen = false; bad.push(s.id); }
+        tap('Escape');
+      }
+      log('13개 슬롯 모두 stand 위치에서 열린다', allOpen, bad.join(','));
+
+      // 9) 멀어지면 안내가 사라진다
+      place({ x: 0, z: 5.5 });
+      log('멀어지면 안내가 사라진다', promptText() === null);
+
+      const failed = out.filter((l) => l.startsWith('FAIL')).length;
+      $('result').textContent = out.join('\n') + `\nRESULT ${failed === 0 ? 'ALL PASS' : failed + ' FAILED'}`;
+    }
+  </script>
+</body>
+</html>

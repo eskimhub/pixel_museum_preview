@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>upload ui test</title>
+  <link rel="stylesheet" href="../css/style.css">
+  <style>#result { position: fixed; right: 8px; top: 8px; margin: 0; padding: 6px 10px; background: rgba(0,0,0,.8); color: #9f9; font: 12px monospace; white-space: pre; z-index: 50; }</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud"><span class="hud-title">test</span><span id="hud-status">로딩 중...</span></div>
+  <div id="prompt" hidden></div>
+  <section id="panel" hidden role="dialog" aria-modal="true" aria-labelledby="panel-title">
+    <img id="panel-image" alt="" hidden>
+    <h2 id="panel-title"></h2>
+    <p id="panel-author"></p>
+    <p id="panel-desc"></p>
+    <button id="upload-open" type="button" hidden>작품 올리기</button>
+    <form id="upload-form" hidden novalidate>
+      <label>이미지 <input id="upload-file" type="file" accept="image/png,image/jpeg,image/webp"></label>
+      <label>제목 <input id="upload-title" type="text" maxlength="60"></label>
+      <label>설명 <textarea id="upload-desc" rows="3" maxlength="500"></textarea></label>
+      <p id="upload-msg" role="status"></p>
+      <div class="auth-buttons">
+        <button id="upload-submit" type="submit">올리기</button>
+        <button id="upload-cancel" type="button">취소</button>
+      </div>
+    </form>
+    <p class="panel-close">E / Space / Esc 로 닫기</p>
+  </section>
+  <pre id="result">running...</pre>
+  <script type="module">
+    // 모의 서버 연결을 주입해 "빈 자리 -> 올리기 -> 액자에 표시" 흐름을 화면 수준에서 검사한다.
+    import { CONFIG } from '../js/config.js';
+    CONFIG.museumId = ''; // 이 테스트는 데모 작품과 누구나 올리는 모드를 쓴다(사이트 설정의 공유 미술관과 무관하게)
+    await import('../js/main.js');
+    import { SLOTS } from '../js/game/layout.js';
+    import { GuestError } from '../js/data/guest.js';
+    const { player, update, render, artworks, frames, setConnection, setGuestEnter } = window.__pm;
+    const out = [];
+    const log = (name, ok, d = '') => out.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${d}`);
+    const $ = (id) => document.getElementById(id);
+    const key = (type, code, target = window) => target.dispatchEvent(new KeyboardEvent(type, { code, key: code, bubbles: true, cancelable: true }));
+    const tap = (code, target) => { key('keydown', code, target); update(1 / 60); key('keyup', code, target); update(1 / 60); };
+    const run = (s) => { for (let i = 0; i < Math.round(s * 60); i++) update(1 / 60); };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms = 4000) => { for (let t = 0; t < ms; t += 50) { if (fn()) return true; await wait(50); } return false; };
+    const place = (s) => { player.pos = { x: s.stand.x, z: s.stand.z }; run(0.1); };
+    const shown = () => !$('panel').hidden;
+
+    // 모의 서버: 업로드한 것을 기억한다
+    const server = { files: [], rows: [], failInsert: null };
+    const client = {
+      from: () => {
+        const q = {};
+        q.insert = (row) => { q.row = row; return q; };
+        q.select = () => q;
+        q.single = async () => server.failInsert ? { data: null, error: server.failInsert } : (server.rows.push(q.row), { data: { id: 'r' + server.rows.length, ...q.row }, error: null });
+        return q;
+      },
+      storage: { from: () => ({
+        upload: async (p) => { server.files.push(p); return { error: null }; },
+        remove: async (ps) => { server.files = server.files.filter((f) => !ps.includes(f)); return { error: null }; },
+        getPublicUrl: (p) => ({ data: { publicUrl: location.origin + '/vendor/THREE_LICENSE.txt?mock=' + encodeURIComponent(p) } }),
+      }) },
+    };
+
+    const params = new URLSearchParams(location.search);
+    const empty = SLOTS.find((s) => s.kind === 'frame' && !artworks[s.id]);
+    const filled = SLOTS.find((s) => artworks[s.id]);
+
+    async function pickFile() {
+      const c = document.createElement('canvas'); c.width = 400; c.height = 300;
+      const g = c.getContext('2d'); g.fillStyle = '#2a52a8'; g.fillRect(0, 0, 400, 300); g.fillStyle = '#f0c828'; g.fillRect(100, 80, 200, 140);
+      const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+      const dt = new DataTransfer(); dt.items.add(new File([blob], 'mine.png', { type: 'image/png' }));
+      $('upload-file').files = dt.files;
+    }
+
+    // 1) 로그아웃(연결 없음): 서버 설정이 있으면 게스트로 올릴 수 있도록 버튼이 보인다
+    place(empty); tap('KeyE');
+    log('로그인 전에도 빈 자리에 올리기 버튼이 보인다(게스트)', shown() && !$('upload-open').hidden);
+    log('안내문이 게스트 업로드를 알린다', $('panel-desc').textContent.includes('게스트'));
+    tap('Escape');
+    place(filled); tap('KeyE');
+    log('작품이 있는 자리에는 로그인 전에도 버튼이 없다', shown() && $('upload-open').hidden);
+    tap('Escape');
+
+    // 1-a) 게스트 입장 실패: 설정 안내가 보이고 폼은 열리지만 서버에는 아무것도 가지 않는다
+    setGuestEnter(async () => { throw new GuestError('confirm_email', 'x'); });
+    place(empty); tap('KeyE');
+    $('upload-open').click();
+    await waitFor(() => $('upload-msg').textContent.length > 0);
+    log('게스트 입장 실패 시 대시보드 설정 안내', $('upload-msg').textContent.includes('Allow anonymous sign-ins'), $('upload-msg').textContent.slice(0, 40));
+    log('실패 후 버튼 문구가 원래대로', $('upload-open').textContent === '작품 올리기' && !$('upload-open').disabled);
+    tap('Escape');
+
+    // 1-b) 게스트 입장 성공: 연결이 생기고 폼이 열린다
+    setGuestEnter(async () => { const c = { client, museum: { id: 'g1' }, userId: 'guest1' }; setConnection(c); return c; });
+    place(empty); tap('KeyE');
+    $('upload-open').click();
+    await waitFor(() => !$('upload-form').hidden);
+    log('게스트 입장 성공 후 폼이 열린다', !$('upload-form').hidden && $('upload-open').hidden);
+    tap('Escape');
+    setConnection(null);
+
+    // 1-c) 입장해 보니 이 자리에 이미 작품이 있으면 폼 대신 작품을 보여준다
+    setGuestEnter(async () => { artworks[empty.id] = { title: '예전 작품', imageUrl: '', description: '', author: '' }; return { client, museum: { id: 'g1' }, userId: 'guest1' }; });
+    place(empty); tap('KeyE');
+    $('upload-open').click();
+    await waitFor(() => $('panel-title').textContent === '예전 작품');
+    log('이미 작품이 있는 자리면 작품을 보여주고 폼은 열지 않는다', $('panel-title').textContent === '예전 작품' && $('upload-form').hidden);
+    tap('Escape');
+    delete artworks[empty.id];
+
+    // 2) 연결 있음: 작품이 있는 자리에는 버튼이 없다
+    setConnection({ client, museum: { id: 'm1' }, userId: 'u1' });
+    place(filled); tap('KeyE');
+    log('작품이 있는 자리에는 올리기 버튼이 없다', shown() && $('upload-open').hidden);
+    tap('Escape');
+
+    // 3) 빈 자리에는 버튼이 있다
+    place(empty); tap('KeyE');
+    log('내 미술관의 빈 자리에는 올리기 버튼이 보인다', shown() && !$('upload-open').hidden);
+    log('빈 자리 안내 문구가 올리기를 권한다', $('panel-desc').textContent.includes('올려'));
+
+    if (params.get('shot')) {
+      $('upload-open').click();
+      $('upload-title').value = '나의 첫 작품'; $('upload-desc').value = '파랑 바탕에 노란 사각형.';
+      $('upload-msg').textContent = '제목을 입력해 주세요.'; $('upload-msg').className = 'auth-error';
+      run(0.5); render();
+      $('result').textContent = 'screenshot';
+    } else {
+      $('upload-open').click();
+      log('버튼을 누르면 폼이 열리고 버튼은 숨겨진다', !$('upload-form').hidden && $('upload-open').hidden);
+
+      // 4) 폼 안에서 키를 눌러도 게임 입력으로 새지 않는다
+      const before = { ...player.pos };
+      key('keydown', 'KeyD', $('upload-title')); run(0.4); key('keyup', 'KeyD', $('upload-title'));
+      tap('KeyE', $('upload-title')); tap('Space', $('upload-desc'));
+      log('폼 안에서 E/Space/D를 쳐도 패널이 닫히거나 이동하지 않는다', shown() && Math.abs(player.pos.x - before.x) < 1e-9);
+
+      // 5) 검증 실패
+      $('upload-form').requestSubmit(); await wait(50);
+      log('제목이 비면 안내하고 서버에는 보내지 않는다', $('upload-msg').textContent.includes('제목') && server.files.length === 0, $('upload-msg').textContent);
+      $('upload-title').value = '나의 첫 작품';
+      $('upload-form').requestSubmit(); await wait(100);
+      log('이미지를 안 골랐으면 안내한다', /이미지/.test($('upload-msg').textContent) && server.files.length === 0, $('upload-msg').textContent);
+
+      // 6) 서버 오류는 한국어로 보이고 폼은 유지된다
+      await pickFile(); $('upload-desc').value = '파랑 바탕에 노란 사각형.';
+      server.failInsert = { code: '23505', message: 'duplicate' };
+      $('upload-form').requestSubmit();
+      await waitFor(() => $('upload-msg').textContent.includes('이미'));
+      log('저장 실패 시 한국어 오류, 올린 파일은 정리된다', $('upload-msg').textContent.includes('이미') && server.files.length === 0, $('upload-msg').textContent);
+      log('실패 후에도 폼과 입력값이 남아 있고 버튼이 다시 활성화된다', !$('upload-form').hidden && $('upload-title').value === '나의 첫 작품' && !$('upload-submit').disabled);
+
+      // 7) 성공
+      server.failInsert = null;
+      $('upload-form').requestSubmit();
+      const ok = await waitFor(() => artworks[empty.id]);
+      log('성공하면 작품 목록에 들어간다', ok && artworks[empty.id].title === '나의 첫 작품');
+      log('서버에는 파일 1개와 행 1개가 저장된다', server.files.length === 1 && server.rows.length === 1 && server.rows[0].slot === empty.id, JSON.stringify(server.rows[0] || {}));
+      log('경로는 내 폴더 아래 PNG', /^u1\/\d+-\d+\.png$/.test(server.files[0] || ''), server.files[0]);
+      log('올린 직후 패널에 새 작품이 보인다', shown() && $('panel-title').textContent === '나의 첫 작품' && !$('panel-image').hidden);
+      log('작품이 생기면 올리기 버튼/폼은 사라진다', $('upload-open').hidden && $('upload-form').hidden);
+      tap('Escape');
+      log('Esc로 패널이 닫힌다', !shown());
+
+      // 8) 다시 열면 작품으로 보인다 (빈 자리가 아님)
+      place(empty);
+      log('같은 자리의 안내가 "작품 보기"로 바뀐다', $('prompt').textContent.includes('작품 보기'), $('prompt').textContent);
+    }
+    if (out.length) {
+      const failed = out.filter((l) => l.startsWith('FAIL')).length;
+      $('result').textContent = out.join('\n') + `\nRESULT ${failed === 0 ? 'ALL PASS' : failed + ' FAILED'}`;
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>museumApi test</title>
+  <style>#result { margin: 0; padding: 6px 10px; background: #000; color: #9f9; font: 12px monospace; white-space: pre; }</style>
+</head>
+<body>
+  <pre id="result">running...</pre>
+  <script type="module">
+    // 서버 없이 데이터 계층을 검사한다: 모의 Supabase 클라이언트로 호출 순서·실패 시 정리를 확인한다.
+    import { loadMyMuseum, loadArtworks, uploadArtwork, validateArtwork, describeError, BUCKET } from '../js/data/museumApi.js';
+    import { fitSize, checkImageFile, toPng } from '../js/data/imageResize.js';
+
+    const out = [];
+    const log = (name, ok, d = '') => out.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${d}`);
+    const rejects = async (fn) => { try { await fn(); return null; } catch (e) { return e; } };
+
+    // --- 모의 클라이언트 ---
+    function mock({ insertError = null, uploadError = null, rows = [], museum = { id: 'm1', name: '김동구전', is_public: true } } = {}) {
+      const calls = [];
+      const query = (table) => {
+        const q = { table, filters: {} };
+        q.select = (cols) => { q.cols = cols; return q; };
+        q.eq = (k, v) => { q.filters[k] = v; calls.push(['eq', table, k, v]); return q; };
+        q.limit = () => q;
+        q.maybeSingle = async () => ({ data: museum, error: null });
+        q.insert = (row) => { q.row = row; calls.push(['insert', table, row]); return q; };
+        q.single = async () => insertError ? { data: null, error: insertError } : { data: { id: 'a1', ...q.row }, error: null };
+        q.then = (res) => res({ data: rows, error: null }); // await client.from(..).select(..).eq(..)
+        return q;
+      };
+      return {
+        calls,
+        from: query,
+        storage: {
+          from: (bucket) => ({
+            upload: async (path, blob, opts) => { calls.push(['upload', bucket, path, opts]); return uploadError ? { error: uploadError } : { error: null }; },
+            remove: async (paths) => { calls.push(['remove', bucket, paths]); return { error: null }; },
+            getPublicUrl: (p) => ({ data: { publicUrl: `https://x.test/storage/v1/object/public/${bucket}/${p}` } }),
+          }),
+        },
+      };
+    }
+
+    // --- validateArtwork ---
+    log('정상 입력은 통과', validateArtwork({ slot: 3, title: '노을', description: '' }) === null);
+    log('빈 제목 거절', !!validateArtwork({ slot: 3, title: '   ', description: '' }));
+    log('제목 61자 거절', !!validateArtwork({ slot: 3, title: 'a'.repeat(61), description: '' }));
+    log('제목 60자 허용', validateArtwork({ slot: 3, title: 'a'.repeat(60), description: '' }) === null);
+    log('설명 501자 거절', !!validateArtwork({ slot: 3, title: 'a', description: 'b'.repeat(501) }));
+    log('슬롯 13 거절', !!validateArtwork({ slot: 13, title: 'a', description: '' }));
+    log('슬롯 -1 거절', !!validateArtwork({ slot: -1, title: 'a', description: '' }));
+    log('슬롯 12(조각상) 허용', validateArtwork({ slot: 12, title: 'a', description: '' }) === null);
+    log('슬롯이 문자열이면 거절', !!validateArtwork({ slot: '3', title: 'a', description: '' }));
+
+    // --- loadMyMuseum / loadArtworks ---
+    let m = mock();
+    const museum = await loadMyMuseum(m, 'u1');
+    log('내 미술관을 owner_id로 조회한다', museum.id === 'm1' && m.calls.some((c) => c[0] === 'eq' && c[2] === 'owner_id' && c[3] === 'u1'));
+    m = mock({ rows: [{ id: 'a1', slot: 1, title: '노을', description: 'd', image_path: 'u1/1-1.png' }, { id: 'a2', slot: 12, title: '조각', description: '', image_path: 'u1/12-1.png' }] });
+    const map = await loadArtworks(m, { id: 'm1' });
+    log('작품을 슬롯 번호를 키로 돌려준다', Object.keys(map).join() === '1,12');
+    log('이미지 주소는 공개 URL', map[1].imageUrl === `https://x.test/storage/v1/object/public/${BUCKET}/u1/1-1.png`, map[1].imageUrl);
+    log('미술관 id로 작품을 조회한다', m.calls.some((c) => c[0] === 'eq' && c[2] === 'museum_id' && c[3] === 'm1'));
+
+    // --- uploadArtwork ---
+    const blob = new Blob(['x'], { type: 'image/png' });
+    m = mock();
+    const art = await uploadArtwork(m, { museum: { id: 'm1' }, userId: 'u1', slot: 4, title: '  제목  ', description: '설명', blob });
+    const up = m.calls.find((c) => c[0] === 'upload'); const ins = m.calls.find((c) => c[0] === 'insert');
+    log('파일 경로가 "<내 id>/슬롯-시간.png"', /^u1\/4-\d+\.png$/.test(up[2]), up[2]);
+    log('upsert 없이 올린다(덮어쓰기 금지)', up[3].upsert === false && up[3].contentType === 'image/png');
+    log('행에 제목은 앞뒤 공백 제거, 경로 저장', ins[2].title === '제목' && ins[2].image_path === up[2] && ins[2].slot === 4 && ins[2].museum_id === 'm1');
+    log('반환 작품에 공개 URL이 있다', art.title === '제목' && art.imageUrl.endsWith(up[2]));
+    log('파일을 먼저 올리고 그다음 행을 만든다', m.calls.indexOf(up) < m.calls.indexOf(ins));
+
+    m = mock({ insertError: { code: '23505', message: 'duplicate key' } });
+    let e = await rejects(() => uploadArtwork(m, { museum: { id: 'm1' }, userId: 'u1', slot: 4, title: 'a', description: '', blob }));
+    const rm = m.calls.find((c) => c[0] === 'remove');
+    log('행 저장 실패 시 올린 파일을 지운다', !!e && e.code === '23505' && rm && rm[2][0].startsWith('u1/4-'));
+
+    m = mock({ uploadError: { message: 'The object exceeded the maximum allowed size' } });
+    e = await rejects(() => uploadArtwork(m, { museum: { id: 'm1' }, userId: 'u1', slot: 4, title: 'a', description: '', blob }));
+    log('파일 업로드 실패 시 행을 만들지 않는다', !!e && !m.calls.some((c) => c[0] === 'insert' && c[1] === 'artworks') && !m.calls.some((c) => c[0] === 'remove'));
+
+    m = mock();
+    e = await rejects(() => uploadArtwork(m, { museum: { id: 'm1' }, userId: 'u1', slot: 99, title: 'a', description: '', blob }));
+    log('잘못된 입력이면 서버를 부르지 않는다', !!e && m.calls.length === 0, e?.message);
+
+    // --- describeError ---
+    log('PGRST002 -> 서버 준비 안내', describeError({ code: 'PGRST002', message: 'x' }).includes('준비'));
+    log('23505 -> 이미 작품이 있음', describeError({ code: '23505', message: 'x' }).includes('이미'));
+    log('RLS 위반 -> 권한 안내', describeError({ code: '42501', message: 'x' }).includes('권한'));
+    log('네트워크 오류 -> 연결 안내', describeError(new TypeError('Failed to fetch')).includes('연결'));
+
+    // --- imageResize ---
+    log('큰 이미지는 긴 변 256으로 축소', JSON.stringify(fitSize(1024, 512)) === '{"w":256,"h":128}');
+    log('세로가 긴 이미지도 비율 유지', JSON.stringify(fitSize(300, 600)) === '{"w":128,"h":256}');
+    log('작은 이미지는 확대하지 않는다', JSON.stringify(fitSize(64, 48)) === '{"w":64,"h":48}');
+    log('극단적 비율도 최소 1px', fitSize(5000, 1).h === 1);
+    log('파일 없음 거절', !!checkImageFile(null));
+    log('gif 거절', !!checkImageFile({ type: 'image/gif', size: 10 }));
+    log('15MB 초과 거절', !!checkImageFile({ type: 'image/png', size: 16 * 1024 * 1024 }));
+    log('png 허용', checkImageFile({ type: 'image/png', size: 100 }) === null);
+
+    // 실제 PNG 파일을 만들어 변환한다
+    const c = document.createElement('canvas'); c.width = 600; c.height = 300;
+    const g = c.getContext('2d'); g.fillStyle = '#d83a3a'; g.fillRect(0, 0, 600, 300);
+    const srcBlob = await new Promise((r) => c.toBlob(r, 'image/png'));
+    const file = new File([srcBlob], 'big.png', { type: 'image/png' });
+    const outBlob = await toPng(file);
+    const bmp = await createImageBitmap(outBlob);
+    log('toPng: 600x300 -> 256x128 PNG', outBlob.type === 'image/png' && bmp.width === 256 && bmp.height === 128, `${bmp.width}x${bmp.height}`);
+    e = await rejects(() => toPng(new File(['not an image'], 'a.png', { type: 'image/png' })));
+    log('깨진 이미지는 한국어 오류', !!e && e.message.includes('읽을 수 없'), e?.message);
+    e = await rejects(() => toPng(new File(['x'], 'a.gif', { type: 'image/gif' })));
+    log('허용되지 않는 형식은 거절', !!e && e.message.includes('png'));
+
+    const failed = out.filter((l) => l.startsWith('FAIL')).length;
+    document.getElementById('result').textContent = out.join('\n') + `\nRESULT ${failed === 0 ? 'ALL PASS' : failed + ' FAILED'}`;
+  </script>
+</body>
+</html>

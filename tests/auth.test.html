@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>auth test</title>
+  <link rel="stylesheet" href="../css/style.css">
+  <style>#result { position: fixed; right: 8px; bottom: 8px; margin: 0; padding: 6px 10px; background: rgba(0,0,0,.8); color: #9f9; font: 12px monospace; white-space: pre; z-index: 50; }</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud"><span class="hud-title">test</span><span id="hud-status">로딩 중...</span></div>
+  <div id="auth-bar" hidden>
+    <span id="auth-who" hidden></span>
+    <button id="auth-open" type="button">로그인</button>
+    <button id="auth-logout" type="button" hidden>로그아웃</button>
+  </div>
+  <section id="auth-modal" hidden role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <form id="auth-form" novalidate>
+      <h2 id="auth-title">로그인 / 가입</h2>
+      <label>이메일 <input id="auth-email" type="email" autocomplete="email"></label>
+      <label>비밀번호 (6자 이상) <input id="auth-password" type="password" autocomplete="current-password"></label>
+      <p id="auth-msg" role="status"></p>
+      <div class="auth-buttons">
+        <button type="submit">로그인</button>
+        <button id="auth-signup" type="button">가입</button>
+        <button id="auth-cancel" type="button">닫기</button>
+      </div>
+    </form>
+  </section>
+  <div id="prompt" hidden></div>
+  <section id="panel" hidden>
+    <img id="panel-image" alt="" hidden>
+    <h2 id="panel-title"></h2>
+    <p id="panel-author"></p>
+    <p id="panel-desc"></p>
+  </section>
+  <pre id="result">running...</pre>
+  <script type="module">
+    // ?mode=empty : 설정이 비어 있을 때(기본값)  /  ?mode=fake : 도달할 수 없는 서버 주소로 UI 흐름만 검사
+    import { CONFIG } from '../js/config.js';
+    const mode = new URLSearchParams(location.search).get('mode') || 'empty';
+    // empty는 실제 설정과 무관하게 "설정이 비어 있는 배포"를 흉내 낸다
+    if (mode === 'empty') { CONFIG.supabaseUrl = ''; CONFIG.supabaseAnonKey = ''; }
+    if (mode === 'fake') { CONFIG.supabaseUrl = 'http://127.0.0.1:9'; CONFIG.supabaseAnonKey = 'test-anon-key'; }
+    await import('../js/main.js');
+
+    const { player, update } = window.__pm;
+    const out = [];
+    const log = (name, ok, d = '') => out.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${d}`);
+    const $ = (id) => document.getElementById(id);
+    const key = (type, code, target = window) => target.dispatchEvent(new KeyboardEvent(type, { code, key: code, bubbles: true, cancelable: true }));
+    const run = (s) => { for (let i = 0; i < Math.round(s * 60); i++) update(1 / 60); };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms = 3000) => { for (let t = 0; t < ms; t += 50) { if (fn()) return true; await wait(50); } return false; };
+
+    if (mode === 'empty') {
+      await wait(300);
+      log('설정이 비어 있으면 로그인 막대가 숨겨진다', $('auth-bar').hidden);
+      log('설정이 비어 있으면 supabase.js를 불러오지 않는다', !document.querySelector('script[src*="supabase.js"]'));
+      log('설정이 비어 있으면 CONFIG 키가 모두 빈 문자열', CONFIG.supabaseUrl === '' && CONFIG.supabaseAnonKey === '');
+    } else if (mode === 'fake' && new URLSearchParams(location.search).get('shot')) {
+      // 스크린샷용: 로그인 창을 연 상태로 렌더
+      await waitFor(() => !$('auth-bar').hidden);
+      $('auth-open').click();
+      $('auth-msg').textContent = '이메일 또는 비밀번호가 맞지 않습니다.'; $('auth-msg').className = 'auth-error';
+      run(0.5); window.__pm.render();
+    } else {
+      const ready = await waitFor(() => !$('auth-bar').hidden && !$('auth-open').disabled);
+      log('설정이 있으면 로그인 막대가 보인다', ready);
+      log('로그인 버튼은 보이고 로그아웃 버튼은 숨겨져 있다', !$('auth-open').hidden && $('auth-logout').hidden);
+
+      $('auth-open').click();
+      log('로그인 버튼으로 창이 열린다', !$('auth-modal').hidden);
+
+      // 창이 열려 있는 동안 이동 키는 캐릭터를 움직이지 않는다
+      const before = { ...player.pos };
+      key('keydown', 'KeyD'); run(0.5); key('keyup', 'KeyD');
+      log('창이 열려 있으면 캐릭터가 움직이지 않는다', Math.abs(player.pos.x - before.x) + Math.abs(player.pos.z - before.z) < 1e-9);
+
+      // 입력창에서 친 E는 상호작용으로 새지 않는다
+      key('keydown', 'KeyE', $('auth-email'));
+      run(0.1);
+      log('입력창에서 친 E로 작품 패널이 열리지 않는다', $('panel').hidden);
+
+      // 빈 값 검증
+      $('auth-form').requestSubmit();
+      await wait(50);
+      log('빈 값으로 로그인하면 안내 메시지', $('auth-msg').textContent.includes('입력'), $('auth-msg').textContent);
+
+      // 연결 불가 서버: 한국어 오류 메시지, 버튼은 다시 활성화
+      $('auth-email').value = 'a@example.com';
+      $('auth-password').value = 'secret1';
+      $('auth-form').requestSubmit();
+      const got = await waitFor(() => $('auth-msg').textContent.includes('연결'), 5000);
+      log('서버 연결 실패 시 한국어 안내', got, $('auth-msg').textContent);
+      log('실패 후 버튼이 다시 활성화된다', !$('auth-signup').disabled);
+      log('오류 메시지는 오류 스타일', $('auth-msg').className === 'auth-error');
+
+      // 닫기: Esc, 닫기 버튼. 닫으면 비밀번호가 지워진다
+      $('auth-modal').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      log('Esc로 창이 닫힌다', $('auth-modal').hidden);
+      log('닫으면 비밀번호 입력값이 지워진다', $('auth-password').value === '');
+      $('auth-open').click();
+      $('auth-cancel').click();
+      log('닫기 버튼으로 창이 닫힌다', $('auth-modal').hidden);
+
+      // 닫은 뒤에는 다시 이동
+      const b2 = { ...player.pos };
+      key('keydown', 'KeyS'); run(0.3); key('keyup', 'KeyS');
+      log('창을 닫으면 다시 이동한다', Math.abs(player.pos.z - b2.z) > 0.3);
+    }
+
+    if (out.length) {
+      const failed = out.filter((l) => l.startsWith('FAIL')).length;
+      $('result').textContent = out.join('\n') + `\nRESULT ${failed === 0 ? 'ALL PASS' : failed + ' FAILED'}`;
+    } else {
+      $('result').textContent = 'screenshot';
+    }
+  </script>
+</body>
+</html>

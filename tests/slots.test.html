@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="UTF-8"><title>slots test</title></head>
+<body>
+<pre id="out">running...</pre>
+<script type="module">
+import { SLOTS, SLOT_COUNT, STATUE_SLOT, INTERACT_RADIUS, nearestSlot, COLLIDERS, BOUNDS, PLAYER, ROOM } from '../js/game/layout.js';
+import { isBlocked } from '../js/game/collision.js';
+import { sampleArtworks } from '../js/game/artworks.js';
+
+const R = PLAYER.radius;
+const results = [];
+const check = (name, ok, detail = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${detail}`);
+
+check('슬롯이 정확히 13개', SLOT_COUNT === 13 && SLOTS.length === 13, `개수 ${SLOTS.length}`);
+check('슬롯 id가 0~12 연속', SLOTS.every((s, i) => s.id === i));
+check('벽 액자 12개 + 조각상 1개', SLOTS.filter((s) => s.kind === 'frame').length === 12 && SLOTS[STATUE_SLOT].kind === 'statue');
+
+// 방 안에 있다
+check('모든 슬롯이 방 안에 있음', SLOTS.every((s) => Math.abs(s.x) <= ROOM.halfW && Math.abs(s.z) <= ROOM.halfD));
+
+// 서로 겹치지 않는다
+let minGap = 99;
+for (let i = 0; i < SLOTS.length; i++) for (let j = i + 1; j < SLOTS.length; j++) {
+  minGap = Math.min(minGap, Math.hypot(SLOTS[i].x - SLOTS[j].x, SLOTS[i].z - SLOTS[j].z));
+}
+check('슬롯 사이 최소 간격 2.5 이상', minGap >= 2.5, `최소 ${minGap.toFixed(2)}`);
+
+// 관람 위치에 실제로 설 수 있다 (장애물 밖)
+const unreachable = SLOTS.filter((s) => isBlocked(s.stand.x, s.stand.z, R, COLLIDERS, BOUNDS));
+check('모든 관람 위치에 설 수 있음', unreachable.length === 0, unreachable.map((s) => `#${s.id}(${s.stand.x.toFixed(1)},${s.stand.z.toFixed(1)})`).join(' '));
+
+// 관람 위치에서 자기 슬롯이 가장 가깝다
+const wrong = SLOTS.filter((s) => nearestSlot(s.stand)?.id !== s.id);
+check('각 관람 위치에서 자기 슬롯이 선택됨', wrong.length === 0, wrong.map((s) => `#${s.id}->${nearestSlot(s.stand)?.id}`).join(' '));
+
+// 어느 슬롯에서도 멀리 떨어진 곳에서는 아무것도 선택되지 않는다
+const farPoint = { x: 5, z: 2 };
+const farDist = Math.min(...SLOTS.map((s) => Math.hypot(farPoint.x - s.stand.x, farPoint.z - s.stand.z)));
+check('멀리 있으면 선택 없음', farDist > INTERACT_RADIUS && nearestSlot(farPoint) === null, `가장 가까운 관람 위치까지 ${farDist.toFixed(2)}`);
+// 시작하자마자 조각상 안내가 뜨지 않도록, 스폰 위치는 어떤 슬롯의 상호작용 범위에도 들지 않아야 한다
+check('스폰 위치에서는 선택 없음', nearestSlot(PLAYER.spawn) === null, `선택 ${nearestSlot(PLAYER.spawn)?.id}`);
+
+// 액자는 벽에 붙어 있다
+const onWall = SLOTS.filter((s) => s.kind === 'frame').every((s) =>
+  (s.face === 'south' && Math.abs(s.z + ROOM.halfD) < 0.3) ||
+  (s.face === 'east' && Math.abs(s.x + ROOM.halfW) < 0.3) ||
+  (s.face === 'west' && Math.abs(s.x - ROOM.halfW) < 0.3));
+check('벽 액자가 해당 벽에 붙어 있음', onWall);
+
+// 액자가 화분과 겹치지 않는다 (모서리 화분 반폭 0.45 + 액자 반폭 0.6 이상 떨어져야 한다)
+const plants = [[-9, -7], [9, -7], [-9, 7], [9, 7]];
+const clash = SLOTS.filter((s) => s.kind === 'frame').filter((s) => plants.some(([px, pz]) => Math.hypot(s.x - px, s.z - pz) < 1.4));
+check('액자가 화분과 겹치지 않음', clash.length === 0, clash.map((s) => `#${s.id}`).join(' '));
+
+// 임시 작품 데이터
+const art = sampleArtworks();
+const ids = Object.keys(art).map(Number);
+check('임시 작품 슬롯 id가 모두 유효', ids.every((id) => id >= 0 && id < SLOT_COUNT), ids.join(','));
+check('임시 작품에 제목·설명·이미지가 있음', ids.every((id) => art[id].title && art[id].description && art[id].imageUrl.startsWith('data:image/png')));
+check('빈 슬롯이 있음 (빈 액자 표시용)', ids.length < SLOT_COUNT, `작품 ${ids.length} / 슬롯 ${SLOT_COUNT}`);
+
+const failed = results.filter((r) => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent = results.join('\n') + `\n\nRESULT ${failed === 0 ? 'ALL PASS' : failed + ' FAILED'}`;
+</script>
+</body>
+</html>

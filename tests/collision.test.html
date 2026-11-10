@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="UTF-8"><title>collision test</title></head>
+<body>
+<pre id="out">running...</pre>
+<script type="module">
+import { moveWithCollision, isBlocked } from '../js/game/collision.js';
+import { COLLIDERS, BOUNDS, PLAYER, PEDESTAL, ROPE, BENCHES, PLANTS } from '../js/game/layout.js';
+
+const R = PLAYER.radius;
+const results = [];
+function check(name, ok, detail = '') { results.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${detail}`); }
+
+// 방향으로 오래 걸어가 본다. dt=1/60 속도 4 -> 한 프레임 약 0.067
+function walk(start, dx, dz, frames = 600) {
+  let p = { ...start };
+  for (let i = 0; i < frames; i++) p = moveWithCollision(p, dx, dz, R, COLLIDERS, BOUNDS);
+  return p;
+}
+const step = PLAYER.speed / 60;
+
+// 1) 네 방향 벽
+let p = walk({ x: 0, z: 4.5 }, 0, step);
+check('남쪽 벽에서 멈춤', Math.abs(p.z - (BOUNDS.maxZ - R)) < 1e-6, `z=${p.z.toFixed(2)}`);
+p = walk({ x: 0, z: 4.5 }, 0, -step);
+check('북쪽: 로프에 막힘', p.z > ROPE.z + ROPE.half, `z=${p.z.toFixed(2)}`);
+p = walk({ x: 3, z: 4.5 }, 0, -step);
+check('북쪽 벽에서 멈춤(로프 옆 통로)', Math.abs(p.z - (BOUNDS.minZ + R)) < 1e-6, `z=${p.z.toFixed(2)}`);
+p = walk({ x: 0, z: 4.5 }, step, 0);
+check('동쪽 벽에서 멈춤', Math.abs(p.x - (BOUNDS.maxX - R)) < 1e-6, `x=${p.x.toFixed(2)}`);
+p = walk({ x: 0, z: 4.5 }, -step, 0);
+check('서쪽 벽에서 멈춤', Math.abs(p.x - (BOUNDS.minX + R)) < 1e-6, `x=${p.x.toFixed(2)}`);
+
+// 2) 로프: 4면 모두 안으로 들어갈 수 없다
+const edge = ROPE.half + ROPE.thickness / 2;
+for (const [name, start, dx, dz, axis, limit] of [
+  ['로프 남쪽', { x: 0, z: 5 }, 0, -step, 'z', ROPE.z + edge + R],
+  ['로프 북쪽', { x: 0, z: -5 }, 0, step, 'z', ROPE.z - edge - R],
+  ['로프 동쪽', { x: 3.5, z: 0 }, -step, 0, 'x', ROPE.x + edge + R],
+  ['로프 서쪽', { x: -3.5, z: 0 }, step, 0, 'x', ROPE.x - edge - R],
+]) {
+  const q = walk(start, dx, dz);
+  check(`${name}에서 막힘`, Math.abs(q[axis] - limit) < 1e-6, `${axis}=${q[axis].toFixed(2)}, 기대 ${limit.toFixed(2)}`);
+}
+// 로프 모서리를 대각선으로 파고들어도 안으로 들어가지 못한다
+for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+  const q = walk({ x: sx * 4, z: sz * 4 }, -sx * step * 0.7, -sz * step * 0.7, 300);
+  check(`로프 모서리(${sx},${sz}) 대각선 진입 불가`, Math.abs(q.x) > ROPE.half || Math.abs(q.z) > ROPE.half, `x=${q.x.toFixed(2)} z=${q.z.toFixed(2)}`);
+}
+// 전시대와 조각상은 로프 안쪽에 완전히 들어 있다 (플레이어가 닿을 수 없다)
+check('전시대가 로프 안쪽에 있음', PEDESTAL.size / 2 + 0.25 < ROPE.half - R);
+
+// 3) 벽을 따라 미끄러지기: 대각선으로 남쪽 벽에 밀면 x는 계속 이동해야 한다
+p = walk({ x: 0, z: 7 }, step * 0.7, step * 0.7, 60);
+check('벽에 비스듬히 밀면 미끄러짐', p.x > 2 && Math.abs(p.z - (BOUNDS.maxZ - R)) < 1e-6, `x=${p.x.toFixed(2)} z=${p.z.toFixed(2)}`);
+
+// 4) 벤치 / 화분
+const b = BENCHES[1];
+p = walk({ x: 8, z: b.z }, -step, 0);
+check('벤치에 막힘', Math.abs(p.x - (b.x + b.w / 2 + R)) < 1e-6, `x=${p.x.toFixed(2)}`);
+const pl = PLANTS[0];
+p = walk({ x: pl.x + 0.5, z: pl.z + 3 }, 0, -step);
+check('화분에 막힘', p.z > pl.z + pl.size / 2, `z=${p.z.toFixed(2)}`);
+
+// 5) 무작위 걷기 20000프레임 동안 장애물/벽 안에 한 번도 들어가지 않는다
+let seed = 12345;
+const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+let q = { ...PLAYER.spawn };
+let violations = 0, dirX = 0, dirZ = 0, minX = 99, maxX = -99, minZ = 99, maxZ = -99;
+for (let i = 0; i < 20000; i++) {
+  if (i % 40 === 0) { const a = rnd() * Math.PI * 2; dirX = Math.cos(a) * step; dirZ = Math.sin(a) * step; }
+  q = moveWithCollision(q, dirX, dirZ, R, COLLIDERS, BOUNDS);
+  if (isBlocked(q.x, q.z, R - 1e-6, COLLIDERS, BOUNDS)) violations++;
+  minX = Math.min(minX, q.x); maxX = Math.max(maxX, q.x); minZ = Math.min(minZ, q.z); maxZ = Math.max(maxZ, q.z);
+}
+check('무작위 걷기 20000프레임: 침투 0회', violations === 0, `위반 ${violations}회`);
+check('무작위 걷기로 방 대부분을 돌아다님', maxX - minX > 15 && maxZ - minZ > 11, `x범위 ${(maxX-minX).toFixed(1)} z범위 ${(maxZ-minZ).toFixed(1)}`);
+
+// 6) 시작 위치는 비어 있다
+check('시작 위치가 장애물 밖', !isBlocked(PLAYER.spawn.x, PLAYER.spawn.z, R, COLLIDERS, BOUNDS));
+
+const failed = results.filter((r) => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent = results.join('\n') + `\n\nRESULT ${failed === 0 ? 'ALL PASS' : failed + ' FAILED'}`;
+</script>
+</body>
+</html>

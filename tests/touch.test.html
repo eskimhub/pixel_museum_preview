@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>touch test</title>
+  <link rel="stylesheet" href="../css/style.css">
+  <style>#result { position: fixed; right: 8px; top: 60px; margin: 0; padding: 6px 10px; background: rgba(0,0,0,.8); color: #9f9; font: 12px monospace; white-space: pre; z-index: 99; }</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud"><span class="hud-title">test</span><span id="hud-status">로딩 중...</span></div>
+  <div id="prompt" hidden></div>
+  <div id="touch" hidden>
+    <div id="stick-base"><div id="stick-knob"></div></div>
+    <button id="touch-act" type="button">보기</button>
+  </div>
+  <section id="panel" hidden>
+    <img id="panel-image" alt="" hidden>
+    <h2 id="panel-title"></h2>
+    <p id="panel-author"></p>
+    <p id="panel-desc"></p>
+    <div class="panel-foot"><p class="panel-close">E / Space / Esc 로 닫기</p><button id="panel-close-btn" type="button">닫기</button></div>
+  </section>
+  <pre id="result">running...</pre>
+  <script type="module">
+    import '../js/main.js';
+    import { stickVector } from '../js/ui/touch.js';
+    import { nearestSlot, SLOTS } from '../js/game/layout.js';
+    import { isPanelOpen } from '../js/ui/panel.js';
+    const { player, update, render, input } = window.__pm;
+    const out = [];
+    const log = (name, ok, d = '') => out.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${d}`);
+    const run = (s) => { for (let i = 0; i < Math.round(s * 60); i++) update(1 / 60); };
+    const base = document.getElementById('stick-base');
+    const act = document.getElementById('touch-act');
+    const r = base.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2, R = r.width / 2;
+    const ptr = (el, type, x, y, id = 1) => el.dispatchEvent(new PointerEvent(type, { pointerId: id, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+    const snap = () => ({ x: player.pos.x, z: player.pos.z });
+
+    // 순수 함수
+    const near = (a, b) => Math.abs(a - b) < 1e-6;
+    log('stickVector 데드존 안쪽은 0', stickVector(3, 0, 60).x === 0);
+    log('stickVector 가장자리는 길이 1', near(Math.hypot(stickVector(60, 0, 60).x, stickVector(60, 0, 60).z), 1));
+    const dg = stickVector(100, 100, 60);
+    log('stickVector 반지름 밖 대각선도 길이 1', near(Math.hypot(dg.x, dg.z), 1));
+
+    // 표시
+    log('터치 모드: 컨트롤이 보임', document.getElementById('touch').hidden === false && document.body.classList.contains('is-touch'));
+    log('상태 문구가 조이스틱 안내', document.getElementById('hud-status').textContent.includes('조이스틱'));
+
+    // 이동
+    player.pos = { x: 0, z: 3.5 };
+    let a = snap();
+    ptr(base, 'pointerdown', cx + R, cy); run(0.5);
+    let b = snap();
+    log('오른쪽으로 당기면 x 증가', b.x - a.x > 0.5 && Math.abs(b.z - a.z) < 0.01, `${a.x.toFixed(2)} -> ${b.x.toFixed(2)}`);
+    log('바라보는 방향 right', player.dir === 'right');
+    ptr(base, 'pointermove', cx, cy - R); run(0.5);
+    const c = snap();
+    log('위로 당기면 z 감소', c.z < b.z - 0.5, `${b.z.toFixed(2)} -> ${c.z.toFixed(2)}`);
+    // 속도: 가장자리에서 키보드와 같은 속도
+    player.pos = { x: -2, z: 3.5 };
+    ptr(base, 'pointermove', cx + R, cy); a = snap(); run(0.5); b = snap();
+    log('최대로 당기면 속도 3.9 이상 (키보드와 같은 속도 4)', (b.x - a.x) / 0.5 > 3.9, `${((b.x - a.x) / 0.5).toFixed(2)}`);
+    // 약하게 당기면 느림
+    player.pos = { x: -2, z: 3.5 };
+    ptr(base, 'pointermove', cx + R * 0.5, cy); a = snap(); run(0.5); b = snap();
+    log('절반만 당기면 더 느림', (b.x - a.x) / 0.5 < 3.0 && b.x > a.x, `${((b.x - a.x) / 0.5).toFixed(2)}`);
+    // 데드존
+    ptr(base, 'pointermove', cx + R * 0.1, cy); a = snap(); run(0.3); b = snap();
+    log('데드존 안에서는 안 움직임', near(a.x, b.x));
+    // 놓으면 멈춤
+    ptr(base, 'pointermove', cx + R, cy);
+    ptr(base, 'pointerup', cx + R, cy); a = snap(); run(0.3); b = snap();
+    log('손을 떼면 멈춤', near(a.x, b.x));
+    log('조이스틱 값 초기화', input.virtual.x === 0 && input.virtual.z === 0);
+    // 다른 손가락 입력은 무시
+    ptr(base, 'pointerdown', cx + R, cy, 7);
+    ptr(base, 'pointermove', cx - R, cy, 9);
+    log('다른 pointerId 이동은 무시', input.virtual.x > 0);
+    ptr(base, 'pointerup', cx, cy, 9);
+    log('다른 pointerId 떼기는 무시', input.virtual.x > 0);
+    ptr(base, 'pointercancel', cx, cy, 7);
+    log('pointercancel이면 멈춤', input.virtual.x === 0);
+
+    // 보기 버튼 → 패널 열기 → 닫기 버튼
+    const slot = SLOTS[0];
+    player.pos = { x: slot.stand.x, z: slot.stand.z };
+    run(0.1);
+    log('슬롯 근처 안내가 "보기 버튼"', document.getElementById('prompt').textContent.includes('보기 버튼'), document.getElementById('prompt').textContent);
+    ptr(act, 'pointerdown', 0, 0); run(0.1);
+    log('보기 버튼으로 패널 열림', isPanelOpen());
+    const p0 = snap();
+    ptr(base, 'pointerdown', cx + R, cy); run(0.3);
+    log('패널이 열리면 이동 안 함', near(p0.x, snap().x));
+    ptr(base, 'pointerup', cx, cy);
+    document.getElementById('panel-close-btn').click(); run(0.1);
+    log('닫기 버튼으로 패널 닫힘', !isPanelOpen());
+    run(0.1);
+    log('닫은 뒤 바로 다시 열리지 않음', !isPanelOpen());
+
+    render();
+    const pass = out.filter((l) => l.startsWith('PASS')).length;
+    document.getElementById('result').textContent = out.join('\n') + `\n${pass}/${out.length} 통과`;
+  </script>
+</body>
+</html>

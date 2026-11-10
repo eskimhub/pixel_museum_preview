@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>manage artwork test</title>
+  <link rel="stylesheet" href="../css/style.css">
+  <style>#result { position: fixed; right: 8px; top: 8px; margin: 0; padding: 6px 10px; background: rgba(0,0,0,.8); color: #9f9; font: 12px monospace; white-space: pre; z-index: 50; }</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud"><span class="hud-title">test</span><span id="hud-status">로딩 중...</span></div>
+  <div id="prompt" hidden></div>
+  <section id="panel" hidden role="dialog" aria-modal="true" aria-labelledby="panel-title">
+    <img id="panel-image" alt="" hidden>
+    <h2 id="panel-title"></h2>
+    <p id="panel-author"></p>
+    <p id="panel-desc"></p>
+    <button id="upload-open" type="button" hidden>작품 올리기</button>
+    <div class="upload-owner">
+      <button id="upload-replace" type="button" hidden>작품 바꾸기</button>
+      <button id="upload-remove" type="button" hidden>내리기</button>
+    </div>
+    <p id="upload-msg" role="status"></p>
+    <form id="upload-form" hidden novalidate>
+      <label>이미지 <input id="upload-file" type="file" accept="image/png,image/jpeg,image/webp"></label>
+      <label>제목 <input id="upload-title" type="text" maxlength="60"></label>
+      <label>설명 <textarea id="upload-desc" rows="3" maxlength="500"></textarea></label>
+      <div class="auth-buttons"><button id="upload-submit" type="submit">올리기</button><button id="upload-cancel" type="button">취소</button></div>
+    </form>
+    <p class="panel-close">E / Space / Esc 로 닫기</p>
+  </section>
+  <pre id="result">running...</pre>
+  <script type="module">
+    // 주인은 걸린 작품을 새 그림으로 바꾸거나 내릴 수 있고, 방문자·다른 게스트는 할 수 없다.
+    import { CONFIG } from '../js/config.js';
+    CONFIG.museumId = 'M1';
+    await import('../js/main.js');
+    const { SLOTS } = await import('../js/game/layout.js');
+    const { replaceArtwork, removeArtwork } = await import('../js/data/museumApi.js');
+    const { player, update, artworks, frames, setConnection, setView } = window.__pm;
+    const out = [];
+    const log = (name, ok, d = '') => out.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${d}`);
+    const $ = (id) => document.getElementById(id);
+    const key = (type, code, target = window) => target.dispatchEvent(new KeyboardEvent(type, { code, key: code, bubbles: true, cancelable: true }));
+    const tap = (code) => { key('keydown', code); update(1 / 60); key('keyup', code); update(1 / 60); };
+    const run = (s) => { for (let i = 0; i < Math.round(s * 60); i++) update(1 / 60); };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms = 3000) => { for (let t = 0; t < ms; t += 30) { if (fn()) return true; await wait(30); } return false; };
+    const place = (s) => { player.pos = { x: s.stand.x, z: s.stand.z }; run(0.1); };
+    const shown = () => !$('panel').hidden;
+    const vis = (id) => !$(id).hidden;
+
+    // 모의 서버: 작품 한 줄 + 올린 파일 목록
+    const server = { row: { id: 'a1', slot: 0, title: '옛 그림', description: '옛 설명', image_path: 'OWNER/0-1.png' }, files: ['OWNER/0-1.png'], failUpdate: false, failDeleteRows: false, calls: [] };
+    function mkClient() {
+      return {
+        from() {
+          const q = { op: 'select' };
+          q.update = (v) => { q.op = 'update'; q.v = v; return q; };
+          q.delete = () => { q.op = 'delete'; return q; };
+          q.eq = () => q;
+          q.select = () => q;
+          q.single = async () => {
+            if (q.op === 'update') {
+              server.calls.push('update');
+              if (server.failUpdate) return { data: null, error: { code: 'PGRST116', message: 'no rows' } };
+              server.row = { ...server.row, ...q.v };
+              return { data: server.row, error: null };
+            }
+            return { data: server.row, error: null };
+          };
+          q.then = (res) => {
+            if (q.op === 'delete') {
+              server.calls.push('delete');
+              if (server.failDeleteRows) return res({ data: [], error: null });
+              const had = server.row; server.row = null; return res({ data: had ? [{ id: had.id }] : [], error: null });
+            }
+            return res({ data: [], error: null });
+          };
+          return q;
+        },
+        storage: { from: () => ({
+          upload: async (p) => { server.calls.push('upload'); server.files.push(p); return { error: null }; },
+          remove: async (ps) => { server.calls.push('remove'); server.files = server.files.filter((f) => !ps.includes(f)); return { error: null }; },
+          getPublicUrl: (p) => ({ data: { publicUrl: location.origin + '/vendor/THREE_LICENSE.txt?mock=' + encodeURIComponent(p) } }),
+        }) },
+      };
+    }
+    const client = mkClient();
+    const museum = { id: 'M1', name: '김동구전', owner_id: 'OWNER' };
+    const filled = SLOTS.find((s) => s.id === 0);
+    const empty = SLOTS.find((s) => s.kind === 'frame' && s.id !== 0);
+    const mkArt = () => ({ id: 'a1', title: '옛 그림', description: '옛 설명', author: '', imagePath: 'OWNER/0-1.png', imageUrl: location.origin + '/vendor/THREE_LICENSE.txt?mock=old' });
+    const setArt = () => { artworks[0] = mkArt(); frames[0]?.setArtwork(artworks[0]); };
+
+    async function pickFile() {
+      const c = document.createElement('canvas'); c.width = 64; c.height = 48;
+      const g = c.getContext('2d'); g.fillStyle = '#c33'; g.fillRect(0, 0, 64, 48);
+      const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+      const dt = new DataTransfer(); dt.items.add(new File([blob], 'new.png', { type: 'image/png' }));
+      $('upload-file').files = dt.files;
+    }
+
+    // --- 데이터 계층
+    server.calls = [];
+    const png = new Blob(['x'], { type: 'image/png' });
+    const newArt = await replaceArtwork(client, { userId: 'OWNER', art: mkArt(), slot: 0, title: ' 새 그림 ', description: '새 설명', blob: png });
+    log('replaceArtwork: 새 파일 업로드 -> 행 수정 -> 옛 파일 삭제 순서', server.calls.join() === 'upload,update,remove', server.calls.join());
+    log('replaceArtwork: 제목 공백 제거, 새 경로로 바뀐다', newArt.title === '새 그림' && /^OWNER\/0-\d+\.png$/.test(newArt.imagePath) && newArt.imagePath !== 'OWNER/0-1.png', newArt.imagePath);
+    log('replaceArtwork: 옛 파일은 지워지고 새 파일만 남는다', server.files.length === 1 && server.files[0] === newArt.imagePath, server.files.join());
+
+    server.failUpdate = true; server.calls = []; const before = server.files.slice();
+    await wait(5); // 파일 경로에 밀리초 시각이 들어가므로, 앞 호출과 같은 경로가 되지 않게 한다
+    let err = null; try { await replaceArtwork(client, { userId: 'OWNER', art: newArt, slot: 0, title: 'x', description: '', blob: png }); } catch (e) { err = e; }
+    log('replaceArtwork: 행 수정이 실패하면 던지고 새 파일을 지운다', err && server.calls.join() === 'upload,update,remove' && server.files.join() === before.join(), server.calls.join());
+    server.failUpdate = false;
+
+    server.failDeleteRows = true; err = null;
+    try { await removeArtwork(client, newArt); } catch (e) { err = e; }
+    log('removeArtwork: 지워진 행이 없으면(권한 없음) 오류, 파일은 건드리지 않는다', err && /권한/.test(err.message) && server.files.length === 1, err?.message);
+    server.failDeleteRows = false;
+
+    // --- 화면
+    server.row = { id: 'a1', slot: 0, title: '옛 그림', description: '옛 설명', image_path: 'OWNER/0-1.png' }; server.files = ['OWNER/0-1.png']; server.calls = [];
+
+    // 방문자: 작품은 보이지만 바꾸기·내리기는 없다
+    setView({ client, museum }); setArt();
+    place(filled); tap('KeyE');
+    log('방문자: 작품 패널에 바꾸기·내리기가 없다', shown() && !vis('upload-replace') && !vis('upload-remove'));
+    tap('Escape');
+
+    // 다른 게스트
+    setConnection({ client, museum, userId: 'GUEST' }); setArt();
+    place(filled); tap('KeyE');
+    log('다른 게스트: 바꾸기·내리기가 없다', shown() && !vis('upload-replace') && !vis('upload-remove'));
+    tap('Escape');
+
+    // 주인
+    setConnection({ client, museum, userId: 'OWNER' }); setArt();
+    place(empty); tap('KeyE');
+    log('주인: 빈 자리에는 올리기만 있다', vis('upload-open') && !vis('upload-replace') && !vis('upload-remove'));
+    tap('Escape');
+    place(filled); tap('KeyE');
+    log('주인: 걸린 작품에는 바꾸기·내리기가 있고 올리기는 없다', vis('upload-replace') && vis('upload-remove') && !vis('upload-open'));
+
+    // 바꾸기: 폼에 기존 제목·설명이 채워진다
+    $('upload-replace').click();
+    log('바꾸기: 폼이 열리고 기존 제목·설명이 채워진다', vis('upload-form') && $('upload-title').value === '옛 그림' && $('upload-desc').value === '옛 설명');
+    log('바꾸기: 제출 버튼 문구가 "바꾸기"', $('upload-submit').textContent === '바꾸기');
+    $('upload-cancel').click();
+    log('바꾸기 취소: 폼이 닫히고 바꾸기·내리기가 다시 보인다', !vis('upload-form') && vis('upload-replace') && vis('upload-remove') && $('upload-submit').textContent === '올리기');
+
+    $('upload-replace').click();
+    await pickFile();
+    $('upload-title').value = '새 그림'; $('upload-desc').value = '새 설명';
+    $('upload-form').requestSubmit();
+    await waitFor(() => $('panel-title').textContent === '새 그림');
+    log('바꾸기: 패널이 새 제목으로 바뀐다', $('panel-title').textContent === '새 그림' && $('panel-desc').textContent === '새 설명');
+    log('바꾸기: 메모리 작품과 서버 행이 새 것이다', artworks[0].title === '새 그림' && server.row.title === '새 그림' && artworks[0].imagePath === server.row.image_path);
+    log('바꾸기: 옛 파일이 지워졌다', !server.files.includes('OWNER/0-1.png') && server.files.length === 1, server.files.join());
+    log('바꾸기 후에도 바꾸기·내리기가 다시 보인다', vis('upload-replace') && vis('upload-remove') && !vis('upload-form'));
+
+    // 내리기: 두 번 눌러야 지워진다
+    $('upload-remove').click();
+    log('내리기: 첫 번째 누름은 확인만 한다', $('upload-remove').textContent === '정말 내릴까요?' && server.row !== null && artworks[0] !== undefined);
+    $('upload-remove').click();
+    await waitFor(() => artworks[0] === undefined);
+    log('내리기: 두 번째 누름에 작품이 사라진다', artworks[0] === undefined && server.row === null);
+    log('내리기: 이미지 파일도 지워졌다', server.files.length === 0, server.files.join());
+    log('내리기: 패널이 빈 자리로 바뀌고 올리기 버튼이 보인다', $('panel-title').textContent === '비어 있는 액자' && vis('upload-open') && !vis('upload-replace') && !vis('upload-remove'));
+    tap('Escape');
+
+    // 확인 상태는 패널을 닫으면 풀린다
+    setArt(); server.row = { id: 'a1', slot: 0, title: '옛 그림', description: '', image_path: 'OWNER/0-1.png' };
+    place(filled); tap('KeyE');
+    $('upload-remove').click();
+    tap('Escape'); place(filled); tap('KeyE');
+    log('패널을 닫았다 열면 내리기 확인이 풀려 있다', $('upload-remove').textContent === '내리기');
+    tap('Escape');
+
+    const pass = out.filter((l) => l.startsWith('PASS')).length;
+    $('result').textContent = out.join('\n') + `\n${pass}/${out.length} 통과`;
+  </script>
+</body>
+</html>

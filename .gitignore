@@ -1,0 +1,9 @@
+.DS_Store
+.bob/tmp/
+node_modules/
+*.log
+.env
+.env.*
+supabase/.temp/
+
+blender_demo/

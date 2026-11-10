@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>auth live test</title>
+  <style>#result { margin: 0; padding: 6px 10px; background: #000; color: #9f9; font: 12px monospace; white-space: pre; }</style>
+</head>
+<body>
+  <pre id="result">running...</pre>
+  <script type="module">
+    // 실제 Supabase 서버에 연결해 클라이언트(키/URL/세션 저장)가 정상 동작하는지 확인한다.
+    // 가입은 하지 않는다(메일 발송/계정 생성 방지). 인증 서버에 로그인 시도를 보내 응답 형태만 본다.
+    import { getClient, isSupabaseConfigured } from '../js/supabaseClient.js';
+    const out = [];
+    const log = (name, ok, d = '') => out.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${d}`);
+    log('설정이 채워져 있다', isSupabaseConfigured());
+    const client = await getClient();
+    log('클라이언트가 만들어진다', !!client?.auth);
+    const { data } = await client.auth.getSession();
+    log('처음에는 로그인 세션이 없다', data.session === null);
+    const { error } = await client.auth.signInWithPassword({ email: 'nobody@gmail.com', password: 'wrong-password-1' });
+    log('없는 계정 로그인은 서버가 거절한다', !!error && /Invalid login credentials/.test(error.message), error?.message);
+    // 공개 읽기 경로 (PostgREST). 스키마 캐시가 살아 있으면 빈 배열, 아니면 오류
+    const r = await client.from('museums').select('id').limit(1);
+    log('museums 조회 (REST)', !r.error, r.error ? `${r.error.code} ${r.error.message}` : `rows=${r.data.length}`);
+    const failed = out.filter((l) => l.startsWith('FAIL')).length;
+    document.getElementById('result').textContent = out.join('\n') + `\nRESULT ${failed === 0 ? 'ALL PASS' : failed + ' FAILED'}`;
+  </script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>shared museum test</title>
+  <link rel="stylesheet" href="../css/style.css">
+  <style>#result { position: fixed; right: 8px; top: 8px; margin: 0; padding: 6px 10px; background: rgba(0,0,0,.8); color: #9f9; font: 12px monospace; white-space: pre; z-index: 50; }</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud"><span class="hud-title">test</span><span id="hud-status">로딩 중...</span></div>
+  <div id="auth-bar"><button id="gb-open" type="button">방명록</button></div>
+  <section id="gb-modal" hidden role="dialog" aria-modal="true" aria-labelledby="gb-title">
+    <h2 id="gb-title">방명록</h2>
+    <p id="gb-note"></p>
+    <ul id="gb-list"></ul>
+    <form id="gb-form" novalidate>
+      <label>이름 <input id="gb-name" type="text" maxlength="20"></label>
+      <label>한 줄 남기기 <textarea id="gb-message" rows="2" maxlength="200"></textarea></label>
+      <div class="auth-buttons"><button id="gb-submit" type="submit">남기기</button></div>
+    </form>
+    <p id="gb-status" role="status"></p>
+    <div class="auth-buttons"><button id="gb-enter" type="button" hidden>게스트로 입장</button><button id="gb-close" type="button">닫기</button></div>
+  </section>
+  <div id="prompt" hidden></div>
+  <section id="panel" hidden role="dialog" aria-modal="true" aria-labelledby="panel-title">
+    <img id="panel-image" alt="" hidden>
+    <h2 id="panel-title"></h2>
+    <p id="panel-author"></p>
+    <p id="panel-desc"></p>
+    <button id="upload-open" type="button" hidden>작품 올리기</button>
+    <form id="upload-form" hidden novalidate>
+      <label>이미지 <input id="upload-file" type="file" accept="image/png,image/jpeg,image/webp"></label>
+      <label>제목 <input id="upload-title" type="text" maxlength="60"></label>
+      <label>설명 <textarea id="upload-desc" rows="3" maxlength="500"></textarea></label>
+      <p id="upload-msg" role="status"></p>
+      <div class="auth-buttons"><button id="upload-submit" type="submit">올리기</button><button id="upload-cancel" type="button">취소</button></div>
+    </form>
+    <p class="panel-close">E / Space / Esc 로 닫기</p>
+  </section>
+  <pre id="result">running...</pre>
+  <script type="module">
+    // CONFIG.museumId가 있을 때: 방문자는 관람과 방명록만, 올리기는 그 미술관의 주인만.
+    // 모의 서버로 "방문자 / 주인 / 다른 게스트" 세 경우를 화면 수준에서 검사한다.
+    import { CONFIG } from '../js/config.js';
+    CONFIG.museumId = 'M1';
+    await import('../js/main.js');
+    const { SLOTS } = await import('../js/game/layout.js');
+    const { player, update, artworks, setConnection, setView } = window.__pm;
+    const out = [];
+    const log = (name, ok, d = '') => out.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${d}`);
+    const $ = (id) => document.getElementById(id);
+    const key = (type, code, target = window) => target.dispatchEvent(new KeyboardEvent(type, { code, key: code, bubbles: true, cancelable: true }));
+    const tap = (code) => { key('keydown', code); update(1 / 60); key('keyup', code); update(1 / 60); };
+    const run = (s) => { for (let i = 0; i < Math.round(s * 60); i++) update(1 / 60); };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms = 3000) => { for (let t = 0; t < ms; t += 30) { if (fn()) return true; await wait(30); } return false; };
+    const place = (s) => { player.pos = { x: s.stand.x, z: s.stand.z }; run(0.1); };
+    const shown = () => !$('panel').hidden;
+
+    const museum = { id: 'M1', name: '김동구전', owner_id: 'OWNER' };
+    const rows = [{ id: 'g1', museum_id: 'M1', author_id: 'x', author_name: '손님', message: '잘 봤어요', created_at: '2026-03-05T10:00:00Z' }];
+    const client = {
+      from(table) {
+        const q = { f: {} };
+        q.select = () => q;
+        q.eq = (k, v) => { q.f[k] = v; return q; };
+        q.order = () => q;
+        q.limit = async () => ({ data: rows.slice(), error: null });
+        q.insert = (row) => { q.row = row; return q; };
+        q.single = async () => { const r = { id: 'n' + rows.length, author_id: 'GUEST', created_at: '2026-03-06T10:00:00Z', ...q.row }; rows.push(r); return { data: r, error: null }; };
+        q.then = (res) => res({ data: [], error: null });
+        return q;
+      },
+      storage: { from: () => ({ getPublicUrl: (p) => ({ data: { publicUrl: p } }) }) },
+    };
+
+    const filled = SLOTS.find((s) => s.kind === 'frame');
+    const empty = SLOTS.find((s) => s.kind === 'frame' && s.id !== filled.id);
+    artworks[filled.id] = { id: 'a1', title: '주인의 작품', description: '', author: '', imageUrl: '' };
+
+    // 1) 방문자: 로그인 안 함, 미술관은 읽을 수 있다(view)
+    setView({ client, museum });
+    place(empty); tap('KeyE');
+    log('방문자: 빈 자리에서도 올리기 버튼이 없다', shown() && $('upload-open').hidden);
+    log('방문자: 안내문이 올리기를 권하지 않는다', !$('panel-desc').textContent.includes('올려'), $('panel-desc').textContent);
+    tap('Escape');
+    place(filled); tap('KeyE');
+    log('방문자: 작품은 볼 수 있다', shown() && $('panel-title').textContent === '주인의 작품');
+    tap('Escape');
+
+    // 2) 방문자의 방명록: 로그인 전에도 글은 읽고, 쓰려면 입장해야 한다
+    $('gb-open').click();
+    await waitFor(() => $('gb-list').children.length > 0);
+    log('방문자: 입장 전에도 방명록 글이 보인다', $('gb-list').textContent.includes('잘 봤어요'));
+    log('방문자: 쓰기 폼은 숨기고 "게스트로 입장"이 보인다', $('gb-form').hidden && !$('gb-enter').hidden);
+    log('방문자: 남의 글에는 삭제 버튼이 없다', $('gb-list').querySelectorAll('.gb-del').length === 0);
+    log('방명록 제목이 이 미술관 이름', $('gb-note').textContent.includes('김동구전'));
+    $('gb-close').click();
+
+    // 3) 다른 게스트: 로그인했지만 주인이 아니다
+    setConnection({ client, museum, userId: 'GUEST' });
+    place(empty); tap('KeyE');
+    log('다른 게스트: 올리기 버튼이 없다', shown() && $('upload-open').hidden);
+    tap('Escape');
+    $('gb-open').click();
+    await waitFor(() => !$('gb-form').hidden);
+    log('다른 게스트: 방명록 폼이 보인다', !$('gb-form').hidden && $('gb-enter').hidden);
+    $('gb-name').value = '게스트'; $('gb-message').value = '다녀갑니다';
+    $('gb-form').requestSubmit();
+    await waitFor(() => $('gb-list').textContent.includes('다녀갑니다'));
+    log('다른 게스트: 방명록을 남기면 목록에 나타난다', $('gb-list').textContent.includes('다녀갑니다'));
+    log('다른 게스트: 자기 글에만 삭제 버튼이 있다', $('gb-list').querySelectorAll('.gb-del').length === 1);
+    $('gb-close').click();
+
+    // 4) 주인: 올리기 버튼이 보이고, 남의 글도 지울 수 있다
+    setConnection({ client, museum, userId: 'OWNER' });
+    place(empty); tap('KeyE');
+    log('주인: 빈 자리에 올리기 버튼이 보인다', shown() && !$('upload-open').hidden);
+    log('주인: 안내문이 올리기를 권한다', $('panel-desc').textContent.includes('올려'));
+    tap('Escape');
+    place(filled); tap('KeyE');
+    log('주인: 작품이 있는 자리에는 버튼이 없다', shown() && $('upload-open').hidden);
+    tap('Escape');
+    $('gb-open').click();
+    await waitFor(() => $('gb-list').querySelectorAll('.gb-del').length === rows.length);
+    log('주인: 모든 글에 삭제 버튼이 있다', $('gb-list').querySelectorAll('.gb-del').length === rows.length, `${$('gb-list').querySelectorAll('.gb-del').length}/${rows.length}`);
+    $('gb-close').click();
+
+    const pass = out.filter((l) => l.startsWith('PASS')).length;
+    $('result').textContent = out.join('\n') + `\n${pass}/${out.length} 통과`;
+  </script>
+</body>
+</html>

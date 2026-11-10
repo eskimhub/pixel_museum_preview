@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>movement test</title>
+  <link rel="stylesheet" href="../css/style.css">
+  <style>#result { position: fixed; right: 8px; bottom: 8px; margin: 0; padding: 6px 10px; background: rgba(0,0,0,.8); color: #9f9; font: 12px monospace; white-space: pre; }</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud"><span class="hud-title">test</span><span id="hud-status">로딩 중...</span></div>
+  <div id="prompt" hidden></div>
+  <section id="panel" hidden>
+    <img id="panel-image" alt="" hidden>
+    <h2 id="panel-title"></h2>
+    <p id="panel-author"></p>
+    <p id="panel-desc"></p>
+  </section>
+  <pre id="result">running...</pre>
+  <script type="module">
+    import '../js/main.js';
+    import { PLAYER, ROPE } from '../js/game/layout.js';
+    const { player, update, render } = window.__pm;
+    const out = [];
+    const log = (name, ok, d = '') => out.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${d}`);
+    const key = (type, code) => window.dispatchEvent(new KeyboardEvent(type, { code, bubbles: true, cancelable: true }));
+    const snap = () => ({ x: player.pos.x, z: player.pos.z });
+    const place = (x, z) => { player.pos = { x, z }; };
+    // 60fps로 seconds초 동안 게임을 진행한다
+    const run = (seconds) => { for (let i = 0; i < Math.round(seconds * 60); i++) update(1 / 60); };
+    const hold = (codes, seconds) => {
+      [].concat(codes).forEach((c) => key('keydown', c));
+      run(seconds);
+      [].concat(codes).forEach((c) => key('keyup', c));
+    };
+
+    const params = new URLSearchParams(location.search);
+    const shot = params.get('shot'); // 스크린샷용: shot=x,z
+    if (shot) {
+      const [sx, sz] = shot.split(',').map(Number);
+      place(sx, sz);
+      player.dir = params.get('face') || 'up';
+      run(2);            // 카메라가 따라오도록 진행
+      render();
+      document.getElementById('result').textContent = `player ${player.pos.x.toFixed(1)}, ${player.pos.z.toFixed(1)}`;
+    } else {
+      const move = (name, codes, axis, sign) => {
+        const a = snap(); hold(codes, 0.5); const b = snap();
+        log(`${name}: ${axis} ${sign > 0 ? '증가' : '감소'}`, (b[axis] - a[axis]) * sign > 0.5, `${a[axis].toFixed(2)} -> ${b[axis].toFixed(2)}`);
+      };
+      place(0, 3.5);
+      move('ArrowLeft', 'ArrowLeft', 'x', -1);
+      move('ArrowRight', 'ArrowRight', 'x', 1);
+      move('A', 'KeyA', 'x', -1);
+      move('D', 'KeyD', 'x', 1);
+      move('S', 'KeyS', 'z', 1);
+      move('ArrowDown', 'ArrowDown', 'z', 1);
+      move('ArrowUp', 'ArrowUp', 'z', -1);
+      move('W', 'KeyW', 'z', -1);
+
+      // 속도: 0.5초 동안 PLAYER.speed * 0.5 만큼 이동
+      place(-6, 3.5); let a = snap(); hold('KeyD', 0.5); let b = snap();
+      log('이동 속도가 설정값과 일치', Math.abs((b.x - a.x) - PLAYER.speed * 0.5) < 0.05, `${(b.x - a.x).toFixed(2)} (기대 ${(PLAYER.speed * 0.5).toFixed(2)})`);
+
+      // 키를 떼면 멈춘다
+      a = snap(); run(0.5); b = snap();
+      log('키를 떼면 정지', Math.abs(b.x - a.x) + Math.abs(b.z - a.z) < 1e-9);
+
+      // 북쪽으로 계속 가면 로프 앞에서 멈춘다 (로프 바깥 면 + 플레이어 반지름)
+      const stopZ = ROPE.z + ROPE.half + ROPE.thickness / 2 + PLAYER.radius;
+      place(0, 4.5); hold('KeyW', 3);
+      log('북쪽으로 계속 가면 로프 앞에서 정지', Math.abs(player.pos.z - stopZ) < 0.01 && Math.abs(player.pos.x) < 0.01, `x=${player.pos.x.toFixed(2)} z=${player.pos.z.toFixed(2)} 기대 ${stopZ.toFixed(2)}`);
+
+      // 로프 옆으로 돌아 북쪽 벽까지
+      hold('KeyD', 0.8); hold('KeyW', 3);
+      log('옆으로 돌아 북쪽 벽까지 도달', player.pos.z < -7.5, `x=${player.pos.x.toFixed(2)} z=${player.pos.z.toFixed(2)}`);
+
+      // 대각선 속도가 직선과 같다
+      place(-6, 5); a = snap(); hold(['KeyW', 'KeyD'], 0.4); b = snap();
+      const diag = Math.hypot(b.x - a.x, b.z - a.z);
+      place(-6, 5); a = snap(); hold('KeyD', 0.4); b = snap();
+      const straight = Math.hypot(b.x - a.x, b.z - a.z);
+      log('대각선 속도 = 직선 속도', Math.abs(diag - straight) < 0.02, `대각 ${diag.toFixed(3)} 직선 ${straight.toFixed(3)}`);
+
+      // 반대 방향 키를 동시에 누르면 제자리
+      place(-6, 5); a = snap(); hold(['KeyA', 'KeyD'], 0.5); b = snap();
+      log('좌우 동시 입력은 제자리', Math.abs(b.x - a.x) < 1e-9);
+
+      // 창이 포커스를 잃으면 눌린 키가 풀린다 (키가 끼어서 계속 걷는 문제 방지)
+      place(-6, 5); key('keydown', 'KeyD'); window.dispatchEvent(new Event('blur'));
+      a = snap(); run(0.5); b = snap();
+      log('blur 후 입력 초기화', Math.abs(b.x - a.x) < 1e-9);
+
+      // 한 프레임이 매우 길어도(dt 큼) 전시대를 통과하지 않는다 (update에는 main.js의 0.05초 제한이 걸리므로 0.05로 테스트)
+      place(0, 4); key('keydown', 'KeyW'); for (let i = 0; i < 100; i++) update(0.05); key('keyup', 'KeyW');
+      log('큰 dt에도 로프 통과 없음', player.pos.z > ROPE.z + ROPE.half, `z=${player.pos.z.toFixed(2)}`);
+
+      const failed = out.filter((l) => l.startsWith('FAIL')).length;
+      document.getElementById('result').textContent = out.join('\n') + `\nRESULT ${failed === 0 ? 'ALL PASS' : failed + ' FAILED'}`;
+    }
+  </script>
+</body>
+</html>

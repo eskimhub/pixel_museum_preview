@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>guestbook test</title>
+  <link rel="stylesheet" href="../css/style.css">
+  <style>#result { position: fixed; left: 8px; top: 8px; margin: 0; padding: 6px 10px; background: rgba(0,0,0,.8); color: #9f9; font: 12px monospace; white-space: pre; z-index: 50; }</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud"><span class="hud-title">test</span><span id="hud-status">로딩 중...</span></div>
+  <div id="auth-bar"><button id="gb-open" type="button">방명록</button></div>
+  <section id="gb-modal" hidden role="dialog" aria-modal="true" aria-labelledby="gb-title">
+    <h2 id="gb-title">방명록</h2>
+    <p id="gb-note"></p>
+    <ul id="gb-list"></ul>
+    <form id="gb-form" novalidate>
+      <label>이름 <input id="gb-name" type="text" maxlength="20"></label>
+      <label>한 줄 남기기 <textarea id="gb-message" rows="2" maxlength="200"></textarea></label>
+      <div class="auth-buttons"><button id="gb-submit" type="submit">남기기</button></div>
+    </form>
+    <p id="gb-status" role="status"></p>
+    <div class="auth-buttons"><button id="gb-enter" type="button" hidden>게스트로 입장</button><button id="gb-close" type="button">닫기</button></div>
+  </section>
+  <div id="prompt" hidden></div>
+  <section id="panel" hidden><img id="panel-image" alt="" hidden><h2 id="panel-title"></h2><p id="panel-author"></p><p id="panel-desc"></p></section>
+  <pre id="result">running...</pre>
+  <script type="module">
+    import '../js/main.js';
+    import { GuestError } from '../js/data/guest.js';
+    import { validateEntry, canDelete, formatDate, loadEntries, addEntry, deleteEntry } from '../js/data/guestbookApi.js';
+    const { player, update, setConnection, setGuestEnter } = window.__pm;
+    const out = [];
+    const log = (name, ok, d = '') => out.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${d}`);
+    const $ = (id) => document.getElementById(id);
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms = 3000) => { for (let t = 0; t < ms; t += 30) { if (fn()) return true; await wait(30); } return false; };
+    const key = (type, code, target = window) => target.dispatchEvent(new KeyboardEvent(type, { code, key: code, bubbles: true, cancelable: true }));
+    const run = (s) => { for (let i = 0; i < Math.round(s * 60); i++) update(1 / 60); };
+
+    // 모의 서버
+    const db = { rows: [], fail: null, seq: 0 };
+    const client = {
+      from(table) {
+        const q = { table, f: {}, op: 'select' };
+        q.select = () => q;
+        q.eq = (k, v) => { q.f[k] = v; return q; };
+        q.order = () => q;
+        q.limit = async () => (db.fail ? { data: null, error: db.fail } : { data: db.rows.filter((r) => r.museum_id === q.f.museum_id).slice().reverse(), error: null });
+        q.insert = (row) => { q.op = 'insert'; q.row = row; return q; };
+        q.delete = () => { q.op = 'delete'; return q; };
+        q.single = async () => {
+          if (db.fail) return { data: null, error: db.fail };
+          const r = { id: 'e' + (++db.seq), author_id: 'me', created_at: '2026-03-05T10:00:00Z', ...q.row };
+          db.rows.push(r); return { data: r, error: null };
+        };
+        q.then = (res, rej) => Promise.resolve(q.op === 'delete'
+          ? (db.fail ? { error: db.fail } : (db.rows = db.rows.filter((r) => r.id !== q.f.id), { error: null }))
+          : { error: null }).then(res, rej);
+        return q;
+      },
+    };
+
+    // --- 순수 함수
+    log('빈 이름 거부', /이름/.test(validateEntry({ name: '  ', message: 'a' })));
+    log('21자 이름 거부', /이름/.test(validateEntry({ name: 'a'.repeat(21), message: 'a' })));
+    log('빈 메시지 거부', /남길 말/.test(validateEntry({ name: 'a', message: ' ' })));
+    log('201자 메시지 거부', /200/.test(validateEntry({ name: 'a', message: 'a'.repeat(201) })));
+    log('경계값(20/200자) 통과', validateEntry({ name: 'a'.repeat(20), message: 'a'.repeat(200) }) === null);
+    log('canDelete: 본인', canDelete({ authorId: 'u1' }, { userId: 'u1', ownerId: 'o' }));
+    log('canDelete: 미술관 주인', canDelete({ authorId: 'x' }, { userId: 'o', ownerId: 'o' }));
+    log('canDelete: 남은 불가', !canDelete({ authorId: 'x' }, { userId: 'u1', ownerId: 'o' }));
+    log('canDelete: 비로그인 불가', !canDelete({ authorId: null }, { userId: null, ownerId: null }));
+    log('formatDate', formatDate('2026-03-05T12:00:00Z').startsWith('2026.03.0'));
+    log('formatDate: 잘못된 값은 빈 문자열', formatDate('xx') === '');
+    let bad = null; try { await addEntry(client, { museumId: 'm1', name: '', message: 'x' }); } catch (e) { bad = e; }
+    log('addEntry는 검증 실패 시 서버를 부르지 않고 던진다', bad && db.rows.length === 0);
+
+    // --- 화면: 연결 없음
+    $('gb-open').click();
+    log('열면 창이 보인다', !$('gb-modal').hidden);
+    log('연결이 없으면 폼 대신 "게스트로 입장"', $('gb-form').hidden && !$('gb-enter').hidden);
+    // 창이 열린 동안 게임 입력은 멈춘다
+    const before = { ...player.pos };
+    key('keydown', 'KeyD'); run(0.4); key('keyup', 'KeyD');
+    log('창이 열려 있으면 캐릭터가 움직이지 않는다', Math.abs(player.pos.x - before.x) < 1e-9);
+    // 입장 실패 안내
+    setGuestEnter(async () => { throw new GuestError('confirm_email', 'x'); });
+    $('gb-enter').click();
+    await waitFor(() => $('gb-status').textContent.includes('Allow anonymous'));
+    log('입장 실패 시 설정 안내가 보인다', $('gb-status').textContent.includes('Allow anonymous sign-ins'));
+    log('입장 실패 후 버튼 다시 활성화', !$('gb-enter').disabled);
+
+    // 입장 성공
+    db.rows.push({ id: 'seed', museum_id: 'm1', author_id: 'other', author_name: '<img src=x onerror=alert(1)>', message: '<b>굵게</b> 잘 봤어요', created_at: '2026-03-04T10:00:00Z' });
+    setGuestEnter(async () => { const c = { client, museum: { id: 'm1', name: '김동구전' }, userId: 'me' }; setConnection(c); return c; });
+    $('gb-enter').click();
+    await waitFor(() => !$('gb-form').hidden && $('gb-list').children.length > 0);
+    log('입장하면 폼이 나오고 입장 버튼은 숨겨진다', !$('gb-form').hidden && $('gb-enter').hidden);
+    log('기존 글이 목록에 보인다', $('gb-list').children.length === 1);
+    log('이름·메시지의 HTML은 글자 그대로 보인다(주입 안 됨)', $('gb-list').querySelector('img') === null && $('gb-list').querySelector('b') === null && $('gb-list').textContent.includes('<b>굵게</b>'));
+    log('내 미술관이므로 남의 글에도 삭제 버튼이 있다(주인)', $('gb-list').querySelectorAll('.gb-del').length === 1);
+    log('창 제목에 미술관 이름', $('gb-note').textContent.includes('김동구전'));
+    log('이름 기본값이 채워진다', $('gb-name').value.length > 0, $('gb-name').value);
+
+    // 검증 실패
+    $('gb-message').value = ''; $('gb-form').requestSubmit(); await wait(30);
+    log('빈 메시지는 안내하고 서버에 안 보낸다', $('gb-status').textContent.includes('남길 말') && db.rows.length === 1);
+
+    // 서버 오류
+    $('gb-name').value = '하늘'; $('gb-message').value = '멋진 전시!';
+    db.fail = { code: 'PGRST002', message: 'Could not query the database for the schema cache' };
+    $('gb-form').requestSubmit();
+    await waitFor(() => $('gb-status').textContent.includes('서버'));
+    log('서버 오류는 한국어 안내, 입력은 유지', $('gb-status').textContent.includes('서버가 아직') && $('gb-message').value === '멋진 전시!' && !$('gb-submit').disabled);
+
+    // 성공
+    db.fail = null;
+    $('gb-form').requestSubmit();
+    await waitFor(() => $('gb-list').children.length === 2);
+    log('남기면 목록에 나타난다', $('gb-list').children.length === 2 && $('gb-list').textContent.includes('멋진 전시!'));
+    log('입력창이 비워진다', $('gb-message').value === '');
+    log('이름을 기억한다', localStorage.getItem('pixelMuseum.gbName') === '하늘');
+    log('글이 늘면 삭제 버튼도 늘어난다', $('gb-list').querySelectorAll('.gb-del').length === 2);
+    // 삭제
+    $('gb-list').querySelector('.gb-del').click(); // 최신 글(방금 쓴 것)
+    await waitFor(() => $('gb-list').children.length === 1);
+    log('삭제하면 목록에서 사라진다', $('gb-list').children.length === 1 && !$('gb-list').textContent.includes('멋진 전시!'));
+
+    // 키 입력이 게임으로 새지 않고 Esc로 닫힌다
+    const b2 = { ...player.pos };
+    key('keydown', 'KeyD', $('gb-message')); run(0.3); key('keyup', 'KeyD', $('gb-message'));
+    log('입력창에서 친 키는 이동으로 새지 않는다', Math.abs(player.pos.x - b2.x) < 1e-9);
+    $('gb-message').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+    log('Esc로 닫힌다', $('gb-modal').hidden);
+    key('keydown', 'KeyD'); const b3 = player.pos.x; run(0.3); key('keyup', 'KeyD');
+    log('닫으면 다시 움직일 수 있다', player.pos.x > b3 + 0.5);
+
+    // 오래된 응답은 버린다
+    let release; const slow = new Promise((r) => { release = r; });
+    const slowClient = { from: () => { const q = { eq: () => q, order: () => q, select: () => q, limit: async () => { await slow; return { data: [{ id: 'z', author_id: 'a', author_name: '늦은', message: '늦게 옴', created_at: '2026-01-01T00:00:00Z' }], error: null }; } }; return q; } };
+    setConnection({ client: slowClient, museum: { id: 'm1' }, userId: 'me' });
+    $('gb-open').click(); await wait(20);
+    $('gb-close').click(); release(); await wait(60);
+    log('닫은 뒤 늦게 도착한 응답은 화면에 반영되지 않는다', !$('gb-list').textContent.includes('늦게 옴'));
+
+    const pass = out.filter((l) => l.startsWith('PASS')).length;
+    $('result').textContent = out.join('\n') + `\n${pass}/${out.length} 통과`;
+  </script>
+</body>
+</html>

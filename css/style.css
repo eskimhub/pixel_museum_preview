@@ -1,0 +1,284 @@
+:root {
+  --wine: #6b1d2a;
+  --gold: #d4a84a;
+  --ivory: #f3ead3;
+  --ink: #1b1015;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--ink);
+  overflow: hidden;
+  font-family: "Courier New", ui-monospace, monospace;
+}
+
+/* 낮은 해상도로 그린 캔버스를 화면 크기로 확대하면서 픽셀을 유지한다 */
+#game {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+#hud {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 12px;
+  color: var(--ivory);
+  background: rgba(27, 16, 21, 0.75);
+  border: 2px solid var(--gold);
+  font-size: 14px;
+  pointer-events: none;
+}
+
+.hud-title {
+  color: var(--gold);
+  font-weight: bold;
+}
+
+.hud-error {
+  color: #ff8a8a;
+  white-space: normal;
+  max-width: 60vw;
+}
+
+/* 근처 작품 안내: 화면 아래 가운데 */
+#prompt {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  color: var(--ivory);
+  background: rgba(27, 16, 21, 0.85);
+  border: 2px solid var(--gold);
+  font-size: 14px;
+  pointer-events: none;
+}
+
+/* 작품 상세 패널: 화면 가운데 */
+#panel {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(560px, 90vw);
+  max-height: 88vh;
+  overflow: auto;
+  padding: 18px 20px;
+  color: var(--ivory);
+  background: rgba(27, 16, 21, 0.94);
+  border: 3px solid var(--gold);
+  box-shadow: 0 0 0 3px var(--wine);
+}
+
+#panel[hidden], #prompt[hidden], #panel-image[hidden] { display: none; }
+
+#panel-image {
+  display: block;
+  width: 100%;
+  max-height: 50vh;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: #0e080b;
+  border: 2px solid var(--gold);
+}
+
+#panel h2 { margin: 12px 0 2px; color: var(--gold); font-size: 20px; }
+#panel p { margin: 4px 0; line-height: 1.5; }
+#panel-author { color: #c9b98f; font-size: 13px; }
+.panel-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 12px; }
+.panel-close { margin: 0 !important; color: #9a8f74; font-size: 12px; text-align: right; }
+body.is-touch .panel-close { display: none; }
+#panel-close-btn {
+  padding: 8px 16px;
+  color: var(--ivory);
+  background: var(--wine);
+  border: 2px solid var(--gold);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* 로그인: 오른쪽 위 막대 + 가운데 창 */
+#auth-bar {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--ivory);
+  font-size: 13px;
+}
+
+#auth-modal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(360px, 90vw);
+  padding: 18px 20px;
+  color: var(--ivory);
+  background: rgba(27, 16, 21, 0.96);
+  border: 3px solid var(--gold);
+  box-shadow: 0 0 0 3px var(--wine);
+}
+
+#auth-bar[hidden], #auth-modal[hidden], #auth-who[hidden], #auth-open[hidden], #auth-logout[hidden] { display: none; }
+
+#auth-modal h2 { margin: 0 0 10px; color: var(--gold); font-size: 20px; }
+#auth-modal label { display: block; margin: 8px 0; font-size: 13px; }
+#auth-modal input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  color: var(--ivory);
+  background: #0e080b;
+  border: 2px solid var(--gold);
+  font: inherit;
+}
+#auth-msg { min-height: 1.4em; margin: 8px 0; font-size: 13px; }
+.auth-error { color: #ff8a8a; }
+.auth-ok { color: #9fe0a0; }
+.auth-buttons { display: flex; gap: 8px; }
+
+#auth-bar button, .auth-buttons button {
+  padding: 5px 12px;
+  color: var(--ivory);
+  background: var(--wine);
+  border: 2px solid var(--gold);
+  font: inherit;
+  cursor: pointer;
+}
+#auth-bar button:hover, .auth-buttons button:hover { background: #8a2a3b; }
+button:disabled { opacity: 0.5; cursor: default; }
+
+/* 작품 올리기 폼 (상세 패널 안) */
+#upload-form[hidden], #upload-open[hidden], #upload-replace[hidden], #upload-remove[hidden] { display: none; }
+.upload-owner { display: flex; gap: 8px; }
+#upload-msg:empty { display: none; }
+#upload-form label { display: block; margin: 8px 0; font-size: 13px; }
+#upload-form input[type="text"], #upload-form textarea, #upload-form input[type="file"] {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  color: var(--ivory);
+  background: #0e080b;
+  border: 2px solid var(--gold);
+  font: inherit;
+}
+#upload-form textarea { resize: vertical; }
+#upload-msg { min-height: 1.4em; margin: 8px 0; font-size: 13px; }
+#upload-open, #upload-replace, #upload-remove, #upload-form button {
+  padding: 5px 12px;
+  color: var(--ivory);
+  background: var(--wine);
+  border: 2px solid var(--gold);
+  font: inherit;
+  cursor: pointer;
+}
+#upload-open, #upload-replace, #upload-remove { margin-top: 10px; }
+#upload-open:hover, #upload-replace:hover, #upload-remove:hover, #upload-form button:hover { background: #8a2a3b; }
+
+/* 터치 조작: 조이스틱(왼쪽 아래)과 보기 버튼(오른쪽 아래). 패널·로그인 창보다 아래에 깔린다 */
+#touch[hidden] { display: none; }
+#touch { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+#stick-base, #touch-act { pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+#stick-base {
+  position: absolute;
+  left: 24px;
+  bottom: 28px;
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  background: rgba(27, 16, 21, 0.55);
+  border: 3px solid var(--gold);
+}
+#stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 56px;
+  height: 56px;
+  margin: -28px 0 0 -28px;
+  border-radius: 50%;
+  background: var(--wine);
+  border: 3px solid var(--gold);
+  pointer-events: none;
+}
+#touch-act {
+  position: absolute;
+  right: 24px;
+  bottom: 48px;
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  color: var(--ivory);
+  background: var(--wine);
+  border: 3px solid var(--gold);
+  font: inherit;
+  font-size: 18px;
+}
+#touch-act:active { background: #8a2a3b; }
+body.is-touch { touch-action: none; user-select: none; -webkit-user-select: none; }
+body.is-touch input, body.is-touch textarea { user-select: text; -webkit-user-select: text; }
+#panel, #auth-modal { z-index: 10; }
+#auth-bar { z-index: 6; }
+body.is-touch #prompt { bottom: 180px; }
+body.is-touch #panel { touch-action: pan-y; }
+
+/* 좁은 화면: 상단 안내 문구가 로그인 막대와 겹치지 않게 줄바꿈하고 막대를 아래로 내린다 */
+@media (max-width: 640px) {
+  #hud { right: 12px; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; }
+  #auth-bar { top: 74px; }
+}
+
+/* 방명록 */
+#gb-modal[hidden], #gb-enter[hidden], #gb-form[hidden] { display: none; }
+#gb-modal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10;
+  width: min(460px, 92vw);
+  max-height: 88vh;
+  overflow: auto;
+  padding: 16px 18px;
+  color: var(--ivory);
+  background: rgba(27, 16, 21, 0.96);
+  border: 3px solid var(--gold);
+  box-shadow: 0 0 0 3px var(--wine);
+}
+#gb-modal h2 { margin: 0 0 4px; color: var(--gold); font-size: 20px; }
+#gb-note { margin: 0 0 8px; color: #c9b98f; font-size: 13px; }
+#gb-list { list-style: none; margin: 0 0 10px; padding: 0; max-height: 34vh; overflow: auto; border: 2px solid #4a3a2a; background: #0e080b; }
+#gb-list li { padding: 8px 10px; border-bottom: 1px solid #3a2c22; }
+#gb-list li:last-child { border-bottom: 0; }
+#gb-list .gb-empty { color: #9a8f74; font-size: 13px; }
+.gb-head { display: flex; gap: 10px; align-items: baseline; font-size: 13px; }
+.gb-head strong { color: var(--gold); }
+.gb-head span { color: #9a8f74; font-size: 12px; }
+.gb-del { margin-left: auto; padding: 1px 8px; color: var(--ivory); background: var(--wine); border: 1px solid var(--gold); font: inherit; font-size: 12px; cursor: pointer; }
+#gb-list p { margin: 4px 0 0; line-height: 1.5; font-size: 14px; word-break: break-word; white-space: pre-wrap; }
+#gb-form label { display: block; margin: 6px 0; font-size: 13px; }
+#gb-form input, #gb-form textarea {
+  display: block; width: 100%; margin-top: 4px; padding: 6px 8px;
+  color: var(--ivory); background: #0e080b; border: 2px solid var(--gold); font: inherit;
+}
+#gb-form textarea { resize: vertical; }
+#gb-status { min-height: 1.4em; margin: 8px 0; font-size: 13px; }
+#gb-modal button:not(.gb-del) { padding: 5px 12px; color: var(--ivory); background: var(--wine); border: 2px solid var(--gold); font: inherit; cursor: pointer; }
+#gb-modal button:hover { background: #8a2a3b; }
+#auth-bar { flex-wrap: wrap; justify-content: flex-end; }
+#auth-bar #gb-open { padding: 5px 12px; color: var(--ivory); background: var(--wine); border: 2px solid var(--gold); font: inherit; cursor: pointer; }

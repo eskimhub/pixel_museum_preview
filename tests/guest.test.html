@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8"><title>guest test</title></head>
+<body><pre id="result">running...</pre>
+<script type="module">
+import { ensureGuest, GuestError, guestHelp, isGuestUser, isGuestEmail, makeGuestCredentials } from '../js/data/guest.js';
+const out = [];
+const log = (name, ok, d = '') => out.push(`${ok ? 'PASS' : 'FAIL'} ${name} ${d}`);
+const memStore = () => { const m = {}; return { getItem: (k) => (k in m ? m[k] : null), setItem: (k, v) => { m[k] = v; }, m }; };
+const SESS = { access_token: 't', user: { id: 'u1' } };
+
+// 모의 클라이언트: 각 호출이 돌려줄 결과와 호출 기록
+function mock(o = {}) {
+  const calls = [];
+  return {
+    calls,
+    auth: {
+      getSession: async () => ({ data: { session: o.session ?? null } }),
+      signInAnonymously: async () => { calls.push('anon'); return o.anon ?? { data: { session: SESS }, error: null }; },
+      signInWithPassword: async (c) => { calls.push('pw:' + c.email); return o.pw ?? { data: { session: null }, error: { message: 'Invalid login credentials' } }; },
+      signUp: async (c) => { calls.push('signup:' + c.email); return o.signup ?? { data: { session: SESS }, error: null }; },
+    },
+  };
+}
+const OFF = { data: { session: null }, error: { code: 'anonymous_provider_disabled', message: 'Anonymous sign-ins are disabled', status: 422 } };
+const fails = async (fn) => { try { await fn(); return null; } catch (e) { return e; } };
+
+// 가상 자격 증명
+const c1 = makeGuestCredentials(), c2 = makeGuestCredentials();
+log('가상 이메일 형식', isGuestEmail(c1.email), c1.email);
+log('가상 비밀번호 6자 이상', c1.password.length >= 6);
+log('매번 다른 자격 증명', c1.email !== c2.email && c1.password !== c2.password);
+log('isGuestUser: 익명', isGuestUser({ is_anonymous: true }));
+log('isGuestUser: 가상 계정', isGuestUser({ email: c1.email }));
+log('isGuestUser: 일반 사용자는 아님', !isGuestUser({ email: 'a@gmail.com' }) && !isGuestUser(null));
+
+// 이미 로그인됨
+let m = mock({ session: SESS }); let r = await ensureGuest(m, memStore());
+log('이미 세션이 있으면 그대로 사용', r.kind === 'existing' && m.calls.length === 0);
+
+// 익명 로그인 성공
+m = mock(); r = await ensureGuest(m, memStore());
+log('익명 로그인 성공', r.kind === 'anonymous' && m.calls.join() === 'anon');
+
+// 익명 꺼짐 -> 가상 계정 생성
+let st = memStore(); m = mock({ anon: OFF }); r = await ensureGuest(m, st);
+log('익명이 꺼져 있으면 가상 계정 생성', r.kind === 'virtual' && m.calls[1].startsWith('signup:guest-'), m.calls.join());
+const saved = JSON.parse(st.m['pixelMuseum.guest'] || 'null');
+log('생성한 자격 증명을 저장', saved && isGuestEmail(saved.email) && saved.password.length >= 6);
+
+// 저장된 계정으로 재로그인 (새로 만들지 않음)
+m = mock({ anon: OFF, pw: { data: { session: SESS }, error: null } }); r = await ensureGuest(m, st);
+log('저장된 가상 계정으로 다시 로그인', r.kind === 'virtual' && m.calls.join() === `anon,pw:${saved.email}`, m.calls.join());
+
+// 저장된 계정이 사라졌으면 새로 만든다
+m = mock({ anon: OFF }); r = await ensureGuest(m, st);
+log('저장된 계정 로그인 실패 시 새로 생성', r.kind === 'virtual' && m.calls.length === 3 && m.calls[2].startsWith('signup:'));
+
+// 이메일 확인 켜짐 -> 세션 없음
+st = memStore(); m = mock({ anon: OFF, signup: { data: { session: null, user: {} }, error: null } });
+let e = await fails(() => ensureGuest(m, st));
+log('이메일 확인이 켜져 있으면 confirm_email', e instanceof GuestError && e.code === 'confirm_email');
+log('이때 자격 증명을 저장하지 않음', st.getItem('pixelMuseum.guest') === null);
+log('안내문에 설정 위치가 나옴', /Allow anonymous sign-ins/.test(guestHelp(e)) && /Confirm email/.test(guestHelp(e)));
+
+// 메일 한도
+m = mock({ anon: OFF, signup: { data: { session: null }, error: { code: 'over_email_send_rate_limit', message: 'email rate limit exceeded', status: 429 } } });
+e = await fails(() => ensureGuest(m, memStore()));
+log('가입 메일 한도 -> rate_limit', e instanceof GuestError && e.code === 'rate_limit');
+m = mock({ anon: { data: { session: null }, error: { code: 'over_request_rate_limit', message: 'rate limit', status: 429 } } });
+e = await fails(() => ensureGuest(m, memStore()));
+log('익명 로그인 한도 -> rate_limit', e instanceof GuestError && e.code === 'rate_limit');
+
+// 그 밖의 가입 오류
+m = mock({ anon: OFF, signup: { data: { session: null }, error: { message: 'Email address is invalid', status: 400 } } });
+e = await fails(() => ensureGuest(m, memStore()));
+log('가입 오류 -> unavailable', e instanceof GuestError && e.code === 'unavailable');
+
+// 네트워크 오류는 그대로 던짐
+m = mock({ anon: { data: { session: null }, error: new Error('Failed to fetch') } });
+e = await fails(() => ensureGuest(m, memStore()));
+log('네트워크 오류는 그대로 전달', e && !(e instanceof GuestError) && /fetch/.test(e.message));
+log('GuestError가 아니면 guestHelp는 null', guestHelp(new Error('x')) === null);
+
+// 망가진 저장값은 무시
+st = memStore(); st.setItem('pixelMuseum.guest', '{not json'); m = mock({ anon: OFF }); r = await ensureGuest(m, st);
+log('깨진 저장값은 무시하고 새로 생성', r.kind === 'virtual');
+st = memStore(); st.setItem('pixelMuseum.guest', JSON.stringify({ email: 'x@evil.com', password: 'p' })); m = mock({ anon: OFF }); r = await ensureGuest(m, st);
+log('게스트 형식이 아닌 저장값은 사용 안 함', !m.calls.some((c) => c.startsWith('pw:')));
+
+const pass = out.filter((l) => l.startsWith('PASS')).length;
+document.getElementById('result').textContent = out.join('\n') + `\n${pass}/${out.length} 통과`;
+</script></body></html>
